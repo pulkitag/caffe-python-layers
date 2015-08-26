@@ -3,11 +3,18 @@ import sys
 import argparse, pprint
 import time
 import numpy as np
+import scipy.misc as scmk
 from easydict import EasyDict as edict
 from multiprocessing import Pool
 from collections import deque
 sys.path.append('/work4/pulkitag-code/code/physicsEngine')
 import dataio as dio
+import pdb
+
+def wrapper_fetch_data(rndSeed, **kwargs):
+	ds  = dio.DataSaver(randSeed=rndSeed, **kwargs)	
+	ims = ds.fetch()
+	return ims
 
 class DataFetch(caffe.Layer):
 	@classmethod
@@ -33,7 +40,7 @@ class DataFetch(caffe.Layer):
 	
 	def setup(self, bottom, top):
 		#Get the parameters
-		self.params_ = TryLayer.parse_args(self.param_str) 
+		self.params_ = DataFetch.parse_args(self.param_str) 
 		#Shape the output blobs
 		top[0].reshape(self.params_.batchSz, self.params_.imSz, self.params_.imSz, 3)
 		top[1].reshape(self.params_.batchSz,)
@@ -43,21 +50,22 @@ class DataFetch(caffe.Layer):
 		#Start loading the data
 		self.fetch_data()
 
-
 	def fetch_data(self):
 		rnd = int(time.time()) 
 		for i in range(self.params_.batchSz):
-			ds  = dio.DataSaver(randSeed=rnd+i, **self.params_)	
-
+			#ds  = dio.DataSaver(randSeed=rnd+i, **self.params_)	
+			self.jobs_.append(self.pool_.apply_async(wrapper_fetch_data, 
+					[rnd + i], self.params_))
+		print ('Data Fetch started')
 
 	def forward(self, bottom, top):
 		#Get the data from the already launched processes
-
+		for i in range(self.params_.batchSz):
+			data = self.jobs_.popleft()
+			data = data.get()  
+			top[0].data[i,:,:,:] = scm.imresize(data[0], (self.params_.imSz, self.params_.imSz))
 		#Launch new processes
 		self.fetch_data()	
-		#Fill in the top
-		top[0].data[...] = top[0].data + self.params_.aa * np.ones(top[0].shape)	
-	
 
 	def backward(self, top, propagate_down, bottom):
 		""" This layer has no backward """
