@@ -115,6 +115,7 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		top[1].reshape(self.param_.batch_size, self.lblSz_, 1, 1)
 		#Create the pool
 		self.pool_ = Pool(processes=self.numIm_)
+		self.launch_jobs()
 		
 	def load_images(self, imNames, jobid):
 		imData = np.zeros((self.param_.batch_size, self.ch_,
@@ -131,22 +132,35 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 			cSt = n * self.ch_
 			cEn = cSt + self.ch_
 			imData[b,cSt:cEn, :, :] = im[y1:y2, x1:x2,[2,1,0]].transpose((2,0,1)) 
-		return jobid, imData
+		return [jobid, imData]
 
+	def _load_images(self, args):
+		return self.load_images(*args) 
 
-	def forward(self, bottom, top):
-		keyStr = 'btch%d'
-		inArgs = edict()
+	def launch_jobs(self):
+		inArgs = []
+		self.labels_ = np.zeros((self.param_.batch_size, self.lblSz_,1,1),np.float32)
 		for n in range(self.numIm_):
-			inArgs[keyStr % n] = []
-
+			inArgs.append([])
 		for b in range(self.param_.batch_size):
 			imNames, lbls = self.wfid_.read_next()
+			self.labels_[b,:,:,] = lbls.reshape(self.lblSz_,1,1).astype(np.float32) 
 			#Read images
 			for n in range(self.numIm_):
-				pass
-			#Read the labels
-			top[1].data[b,:,:,:] = lbls.reshape(self.lblSz_,1,1).astype(np.float32) 
+				inArgs[n].append([imNames[n], n])
+		self.jobs_ = self.pool_.map_async(self._load_images, inArgs)
+	
+	def forward(self, bottom, top):
+		#Load the images
+		imRes      = self.jobs_.get()
+		for res in imRes:
+			jobId, imData = res
+			cSt = jobId * self.ch_
+			cEn = cSt + self.ch_
+			top[0][:,cSt:cEn,:,:] = imData
+		#Read the labels
+		top[1].data[...] = self.labels_
+		self.launch_jobs()
 
 	def backward(self, top, propagate_down, bottom):
 		""" This layer has no backward """
