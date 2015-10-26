@@ -8,6 +8,8 @@ import my_pycaffe_io as mpio
 import my_pycaffe as mp
 from easydict import EasyDict as edict
 import time
+import glog
+import cv2
 
 class PythonWindowDataLayer(caffe.Layer):
 	@classmethod
@@ -20,6 +22,7 @@ class PythonWindowDataLayer(caffe.Layer):
 		parser.add_argument('--crop_size', default=192, type=int)
 		parser.add_argument('--is_gray', dest='is_gray', action='store_true')
 		parser.add_argument('--no-is_gray', dest='is_gray', action='store_false')
+		parser.add_argument('--resume_iter', default=0, type=int)
 		args   = parser.parse_args(argsStr.split())
 		print('Using Config:')
 		pprint.pprint(args)
@@ -52,29 +55,49 @@ class PythonWindowDataLayer(caffe.Layer):
 										self.param_.crop_size, self.param_.crop_size)
 		top[1].reshape(self.param_.batch_size, self.lblSz_, 1, 1)
 		self.load_mean()
-	
+		#Skip the number of examples so that the same examples
+		#are not read back
+		if self.param_.resume_iter > 0:
+			N = self.param_.resume_iter * self.param_.batch_size
+			N = np.mod(N, self.wl_.num_)
+			for n in range(N):
+				_, _ = self.read_next()	
+
 	def forward(self, bottom, top):
+		t1 = time.time()
+		tIm, tProc = 0, 0
 		for b in range(self.param_.batch_size):
+			if self.wfid_.is_eof():	
+				self.wfid_.close()
+				self.wfid_   = mpio.GenericWindowReader(self.param_.source)
+				print ('RESTARTING READ WINDOW FILE')
 			imNames, lbls = self.wfid_.read_next()
 			#Read images
 			for n in range(self.numIm_):
 				#Load images
 				imName, ch, h, w, x1, y1, x2, y2 = imNames[n].strip().split()
 				imName = osp.join(self.param_.root_folder, imName)
-				im     = scm.imread(imName)
+				tImSt = time.time() 
+				im     = cv2.imread(imName)
+				tImEn = time.time() 
+				tIm += (tImEn - tImSt)
 				#Process the image
 				x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
 				#Feed the image	
 				cSt = n * self.ch_
 				cEn = cSt + self.ch_
-				im = scm.imresize(im[y1:y2, x1:x2, :],
+				im = cv2.resize(im[y1:y2, x1:x2, :],
 									(self.param_.crop_size, self.param_.crop_size))
-				im = im[:,:,[2,1,0]].transpose((2,0,1))
+				im = im.transpose((2,0,1))
 				if self.mu_ is not None:
 					im = im - self.mu_
 				top[0].data[b,cSt:cEn, :, :] = im.astype(np.float32)
+				tEn = time.time()
+				tProc += (tEn - tImEn) 
 			#Read the labels
 			top[1].data[b,:,:,:] = lbls.reshape(self.lblSz_,1,1).astype(np.float32) 
+		t2 = time.time()
+		print ('Forward: %fs, Reading: %fs, Processing: %fs' % (t2-t1, tIm, tProc))
 
 	def backward(self, top, propagate_down, bottom):
 		""" This layer has no backward """
@@ -101,15 +124,18 @@ class WindowLoader(object):
 			#Load images
 			imName, ch, h, w, x1, y1, x2, y2 = imNames[b].strip().split()
 			imName = osp.join(self.root_folder, imName)
-			im     = scm.imread(imName)
+			#Gives BGR
+			im     = cv2.imread(imName)
 			#Process the image
 			x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-			im = scm.imresize(im[y1:y2, x1:x2, :],
+			im = cv2.resize(im[y1:y2, x1:x2, :],
 									(self.crop_size, self.crop_size))
-			im = im[:,:,[2,1,0]].transpose((2,0,1))
-			if self.mu is not None:
-				im = im - self.mu
-			imData[b,:, :, :] = im.astype(np.float32) 
+			im = im.transpose((2,0,1))
+			imData[b,:, :, :] = im
+		#Subtract the mean if needed
+		if self.mu is not None:
+			imData = imData - self.mu
+		imData = imData.astype(np.float32)
 		return jobid, imData
 
 def _load_images(args):
@@ -129,6 +155,7 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		parser.add_argument('--crop_size', default=192, type=int)
 		parser.add_argument('--is_gray', dest='is_gray', action='store_true')
 		parser.add_argument('--no-is_gray', dest='is_gray', action='store_false')
+		parser.add_argument('--resume_iter', default=0, type=int)
 		args   = parser.parse_args(argsStr.split())
 		print('Using Config:')
 		pprint.pprint(args)
@@ -170,10 +197,19 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		self.wl_ = WindowLoader(self.param_.root_folder,
 								self.param_.batch_size, self.ch_, 
 								self.param_.crop_size, self.mu_)
+		#Skip the number of examples so that the same examples
+		#are not read back
+		if self.param_.resume_iter > 0:
+			N = self.param_.resume_iter * self.param_.batch_size
+			N = np.mod(N, self.wl_.num_)
+			for n in range(N):
+				_, _ = self.read_next()	
+
 		#Create the pool
 		self.pool_ = Pool(processes=self.numIm_)
 		self.launch_jobs()
-		
+		self.t_ = time.time()	
+	
 	def launch_jobs(self):
 		imList = []
 		for n in range(self.numIm_):
@@ -181,6 +217,10 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		self.labels_ = np.zeros((self.param_.batch_size, self.lblSz_,1,1),np.float32)
 		#Form the list of images and labels
 		for b in range(self.param_.batch_size):
+			if self.wfid_.is_eof():	
+				self.wfid_.close()
+				self.wfid_   = mpio.GenericWindowReader(self.param_.source)
+				print ('RESTARTING READ WINDOW FILE')
 			imNames, lbls = self.wfid_.read_next()
 			self.labels_[b,:,:,:] = lbls.reshape(self.lblSz_,1,1).astype(np.float32) 
 			#Read images
@@ -198,13 +238,16 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 
 	def forward(self, bottom, top):
 		t1 = time.time()
+		tDiff = t1 - self.t_
 		#Load the images
 		try:
 			imRes      = self.jobs_.get()
 		except KeyboardInterrupt:
 			print 'Keyboard Interrupt received - terminating'
 			self.pool_.terminate()	
-	
+		t2 = time.time()
+		tFetch = t2-t1
+		#print ('Loading took %fs in PythonWindowDataParallelLayer' % (t2-t1))
 		for res in imRes:
 			jobId, imData = res
 			cSt = jobId * self.ch_
@@ -214,7 +257,9 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		top[1].data[:,:,:,:] = self.labels_
 		self.launch_jobs()
 		t2 = time.time()
-		print ('Forward took %fs in PythonWindowDataParallelLayer' % (t2-t1))
+		#print ('Forward took %fs in PythonWindowDataParallelLayer' % (t2-t1))
+		glog.info('Prev: %f, fetch: %f forward: %f' % (tDiff,tFetch, t2-t1))
+		self.t_ = time.time()
 
 	def backward(self, top, propagate_down, bottom):
 		""" This layer has no backward """
