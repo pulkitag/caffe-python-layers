@@ -11,6 +11,7 @@ import time
 import glog
 import cv2
 
+
 class PythonWindowDataLayer(caffe.Layer):
 	@classmethod
 	def parse_args(cls, argsStr):
@@ -108,16 +109,30 @@ class PythonWindowDataLayer(caffe.Layer):
 		pass
 
 
+def image_reader(args):
+	imName, imDims, cropSz, imNum = args
+	im     = cv2.imread(imName)
+	#Process the image
+	x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+	im = cv2.resize(im[y1:y2, x1:x2, :],
+						(cropSz, cropSz))
+	im = im.transpose((2,0,1))
+	return im, imNum
+
+
 class WindowLoader(object):
 	def __init__(self, root_folder, batch_size, channels,
-							 crop_size, mu=None):
+							 crop_size, mu=None, poolsz=None):
 		self.root_folder = root_folder
 		self.batch_size  = batch_size
 		self.ch    		   = channels 
 		self.crop_size   = crop_size
 		self.mu          = mu
+		self.pool_       = poolsz
 	
 	def load_images(self, imNames, jobid):
+		if self.pool_ is not None:
+			return self.load_images_parallel(imNames, jobid)
 		imData = np.zeros((self.batch_size, self.ch,
 							self.crop_size, self.crop_size), np.float32)
 		for b in range(self.batch_size):
@@ -137,6 +152,27 @@ class WindowLoader(object):
 			imData = imData - self.mu
 		imData = imData.astype(np.float32)
 		return jobid, imData
+
+	def load_images_parallel(self, imNames, jobid):
+		imData = np.zeros((self.batch_size, self.ch,
+							self.crop_size, self.crop_size), np.float32)
+		inArgs = []
+		for b in range(self.batch_size):
+			#Load images
+			imName, ch, h, w, x1, y1, x2, y2 = imNames[b].strip().split()
+			imName = osp.join(self.root_folder, imName)
+			x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+			inArgs.append([imName, (x1, y1, x2, y2), self.crop_size, b])	
+		jobs = READ_POOL.map_async(image_reader, inArgs)
+		res  = jobs.get()
+		for r in res:
+			imData[r[1],:,:,:] = r[0]
+		#Subtract the mean if needed
+		if self.mu is not None:
+			imData = imData - self.mu
+		imData = imData.astype(np.float32)
+		return jobid, imData
+
 
 def _load_images(args):
 	self, imNames, jobId = args
@@ -196,7 +232,7 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		#Create the window loader
 		self.wl_ = WindowLoader(self.param_.root_folder,
 								self.param_.batch_size, self.ch_, 
-								self.param_.crop_size, self.mu_)
+								self.param_.crop_size, self.mu_, poolsz=4)
 		#Skip the number of examples so that the same examples
 		#are not read back
 		if self.param_.resume_iter > 0:
