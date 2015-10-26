@@ -81,6 +81,33 @@ class PythonWindowDataLayer(caffe.Layer):
 		""" This layer has no reshape """
 		pass
 
+
+class WindowLoader(object):
+	def __init__(self, root_folder, batch_size, channels, crop_size):
+		self.root_folder = root_folder
+		self.batch_size  = batch_size
+		self.ch    		   = channels 
+		self.crop_size   = crop_size
+	
+	def load_images(self, imNames, jobid):
+		imData = np.zeros((self.batch_size, self.ch,
+							self.crop_size, self.crop_size), np.float32)
+		for b in range(self.batch_size):
+			#Load images
+			imName, ch, h, w, x1, y1, x2, y2 = imNames[b].strip().split()
+			imName = osp.join(self.root_folder, imName)
+			im     = scm.imread(imName)
+			im     = im.astype(np.float32)
+			#Process the image
+			x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+			imData[b,:, :, :] = im[y1:y2, x1:x2,[2,1,0]].transpose((2,0,1)) 
+		return jobid, imData
+
+
+def _load_images(args):
+	self, imNames, jobId = args
+	return self.load_images(imNames, jobId) 
+
 ##
 #Parallel version
 class PythonWindowDataParallelLayer(caffe.Layer):
@@ -113,43 +140,46 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		top[0].reshape(self.param_.batch_size, self.numIm_ * self.ch_,
 										self.param_.crop_size, self.param_.crop_size)
 		top[1].reshape(self.param_.batch_size, self.lblSz_, 1, 1)
+	
+		#Create the window loader
+		self.wl_ = WindowLoader(self.param_.root_folder,
+								self.param_.batch_size, self.ch_, 
+								self.param_.crop_size)
+
 		#Create the pool
 		self.pool_ = Pool(processes=self.numIm_)
 		self.launch_jobs()
 		
-	def load_images(self, imNames, jobid):
-		imData = np.zeros((self.param_.batch_size, self.ch_,
-							self.param_.crop_size, self.param_.crop_size), np.float32)
-		for b in range(self.param_.batch_size):
-			#Load images
-			imName, ch, h, w, x1, y1, x2, y2 = imNames[b].strip().split()
-			imName = osp.join(self.param_.root_folder, imName)
-			im     = scm.imread(imName)
-			im     = im.astype(np.float32)
-			#Process the image
-			x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-			#Feed the image	
-			cSt = n * self.ch_
-			cEn = cSt + self.ch_
-			imData[b,cSt:cEn, :, :] = im[y1:y2, x1:x2,[2,1,0]].transpose((2,0,1)) 
-		return [jobid, imData]
-
-	def _load_images(self, args):
-		return self.load_images(*args) 
-
 	def launch_jobs(self):
-		inArgs = []
-		self.labels_ = np.zeros((self.param_.batch_size, self.lblSz_,1,1),np.float32)
+		imList = []
 		for n in range(self.numIm_):
-			inArgs.append([])
+			imList.append([])
+		self.labels_ = np.zeros((self.param_.batch_size, self.lblSz_,1,1),np.float32)
+		#Form the list of images and labels
 		for b in range(self.param_.batch_size):
 			imNames, lbls = self.wfid_.read_next()
-			self.labels_[b,:,:,] = lbls.reshape(self.lblSz_,1,1).astype(np.float32) 
+			self.labels_[b,:,:,:] = lbls.reshape(self.lblSz_,1,1).astype(np.float32) 
 			#Read images
 			for n in range(self.numIm_):
-				inArgs[n].append([imNames[n], n])
-		self.jobs_ = self.pool_.map_async(self._load_images, inArgs)
-	
+				imList[n].append(imNames[n])
+		#Form the arguments for the function
+		inArgs = []
+		for n in range(self.numIm_):
+			inArgs.append([self.wl_, imList[n], n])
+		try:
+			self.jobs_ = self.pool_.map_async(_load_images, inArgs)
+		except KeyboardInterrupt:
+			print 'Keyboard Interrupt received - terminating'
+			self.pool_.terminate()	
+
+	def forward(self, bottom, top):
+		#Load the images
+		try:
+			imRes      = self.jobs_.get()
+		except KeyboardInterrupt:
+			print 'Keyboard Interrupt received - terminating'
+			self.pool_.terminate()	
+
 	def forward(self, bottom, top):
 		#Load the images
 		imRes      = self.jobs_.get()
@@ -157,9 +187,25 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 			jobId, imData = res
 			cSt = jobId * self.ch_
 			cEn = cSt + self.ch_
-			top[0][:,cSt:cEn,:,:] = imData
+			top[0].data[:,cSt:cEn,:,:] = imData
 		#Read the labels
-		top[1].data[...] = self.labels_
+		top[1].data[:,:,:,:] = self.labels_
+		self.launch_jobs()
+
+	def backward(self, top, propagate_down, bottom):
+		""" This layer has no backward """
+		pass
+
+	def reshape(self, bottom, top):
+		""" This layer has no reshape """
+		pass
+		for res in imRes:
+			jobId, imData = res
+			cSt = jobId * self.ch_
+			cEn = cSt + self.ch_
+			top[0].data[:,cSt:cEn,:,:] = imData
+		#Read the labels
+		top[1].data[:,:,:,:] = self.labels_
 		self.launch_jobs()
 
 	def backward(self, top, propagate_down, bottom):
