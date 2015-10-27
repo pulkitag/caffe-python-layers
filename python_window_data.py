@@ -9,7 +9,28 @@ import my_pycaffe as mp
 from easydict import EasyDict as edict
 import time
 import glog
-import cv2
+try:
+	import cv2
+except:
+	print('OPEN CV not found, resorting to scipy.misc')
+
+def image_reader(args):
+	imName, imDims, cropSz, imNum = args
+	x1, y1, x2, y2 = imDims
+	im = cv2.imread(imName)
+	im = cv2.resize(im[y1:y2, x1:x2, :],
+						(cropSz, cropSz))
+	im = im.transpose((2,0,1))
+	return (im, imNum)
+
+def image_reader_scm(args):
+	imName, imDims, cropSz, imNum = args
+	x1, y1, x2, y2 = imDims
+	im = scm.imread(imName)
+	im = scm.imresize(im[y1:y2, x1:x2, :],
+						(cropSz, cropSz))
+	im = im[:,:,[2,1,0]].transpose((2,0,1))
+	return (im, imNum)
 
 
 class PythonWindowDataLayer(caffe.Layer):
@@ -78,20 +99,19 @@ class PythonWindowDataLayer(caffe.Layer):
 				#Load images
 				imName, ch, h, w, x1, y1, x2, y2 = imNames[n].strip().split()
 				imName = osp.join(self.param_.root_folder, imName)
+				x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
 				tImSt = time.time() 
-				im     = cv2.imread(imName)
+				im,_   = image_reader(imName, (x1,y1,x2,y2), self.param_.crop_size,0)
 				tImEn = time.time() 
 				tIm += (tImEn - tImSt)
+			
 				#Process the image
-				x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+				if self.mu_ is not None:
+					im = im - self.mu_
+			
 				#Feed the image	
 				cSt = n * self.ch_
 				cEn = cSt + self.ch_
-				im = cv2.resize(im[y1:y2, x1:x2, :],
-									(self.param_.crop_size, self.param_.crop_size))
-				im = im.transpose((2,0,1))
-				if self.mu_ is not None:
-					im = im - self.mu_
 				top[0].data[b,cSt:cEn, :, :] = im.astype(np.float32)
 				tEn = time.time()
 				tProc += (tEn - tImEn) 
@@ -107,17 +127,6 @@ class PythonWindowDataLayer(caffe.Layer):
 	def reshape(self, bottom, top):
 		""" This layer has no reshape """
 		pass
-
-
-def image_reader(args):
-	imName, imDims, cropSz, imNum = args
-	im     = cv2.imread(imName)
-	#Process the image
-	x1, y1, x2, y2 = imDims
-	im = cv2.resize(im[y1:y2, x1:x2, :],
-						(cropSz, cropSz))
-	im = im.transpose((2,0,1))
-	return (im, imNum)
 
 
 class WindowLoader(object):
@@ -231,9 +240,9 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		#Load the mean
 		self.load_mean()	
 		#Create the window loader
-		self.wl_ = WindowLoader(self.param_.root_folder,
-								self.param_.batch_size, self.ch_, 
-								self.param_.crop_size, self.mu_, poolsz=4)
+		#self.wl_ = WindowLoader(self.param_.root_folder,
+		#						self.param_.batch_size, self.ch_, 
+		#						self.param_.crop_size, self.mu_, poolsz=4)
 		#Skip the number of examples so that the same examples
 		#are not read back
 		if self.param_.resume_iter > 0:
@@ -247,12 +256,19 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		for n in range(self.numIm_):
 			self.pool_.append(Pool(processes=8))
 			self.jobs_.append([])
-		self.launch_jobs()
-		self.t_ = time.time()	
 		
 		self.imData_ = np.zeros((self.param_.batch_size, self.numIm_ * self.ch_,
 						self.param_.crop_size, self.param_.crop_size), np.float32)
-	
+		if 'cv2' in globals():
+			print('OPEN CV FOUND')
+			self.readfn_ = image_reader
+		else:
+			print('OPEN CV NOT FOUND, USING SCM')
+			self.readfn_ = image_reader_scm
+			
+		self.launch_jobs()
+		self.t_ = time.time()	
+
 	def launch_jobs(self):
 		argList = []
 		for n in range(self.numIm_):
@@ -275,7 +291,7 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		#Launch the jobs
 		for n in range(self.numIm_):
 			try:
-				self.jobs_[n] = self.pool_[n].map_async(image_reader, argList[n])
+				self.jobs_[n] = self.pool_[n].map_async(self.readfn_, argList[n])
 			except KeyboardInterrupt:
 				print 'Keyboard Interrupt received - terminating'
 				self.pool_[n].terminate()	
