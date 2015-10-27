@@ -113,11 +113,11 @@ def image_reader(args):
 	imName, imDims, cropSz, imNum = args
 	im     = cv2.imread(imName)
 	#Process the image
-	x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+	x1, y1, x2, y2 = imDims
 	im = cv2.resize(im[y1:y2, x1:x2, :],
 						(cropSz, cropSz))
 	im = im.transpose((2,0,1))
-	return im, imNum
+	return (im, imNum)
 
 
 class WindowLoader(object):
@@ -199,7 +199,8 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 
 	def __del__(self):
 		self.wfid_.close()
-		self.pool_.terminate()
+		for n in self.numIm_:
+			self.pool_[n].terminate()
 
 	def load_mean(self):
 		self.mu_ = None
@@ -242,14 +243,20 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 				_, _ = self.read_next()	
 
 		#Create the pool
-		self.pool_ = Pool(processes=self.numIm_)
+		self.pool_, self.jobs_ = [], []
+		for n in range(self.numIm_):
+			self.pool_.append(Pool(processes=8))
+			self.jobs_.append([])
 		self.launch_jobs()
 		self.t_ = time.time()	
+		
+		self.imData_ = np.zeros((self.param_.batch_size, self.numIm_ * self.ch_,
+						self.param_.crop_size, self.param_.crop_size), np.float32)
 	
 	def launch_jobs(self):
-		imList = []
+		argList = []
 		for n in range(self.numIm_):
-			imList.append([])
+			argList.append([])
 		self.labels_ = np.zeros((self.param_.batch_size, self.lblSz_,1,1),np.float32)
 		#Form the list of images and labels
 		for b in range(self.param_.batch_size):
@@ -261,40 +268,52 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 			self.labels_[b,:,:,:] = lbls.reshape(self.lblSz_,1,1).astype(np.float32) 
 			#Read images
 			for n in range(self.numIm_):
-				imList[n].append(imNames[n])
-		#Form the arguments for the function
-		inArgs = []
+				fName, ch, h, w, x1, y1, x2, y2 = imNames[n].strip().split()
+				fName  = osp.join(self.param_.root_folder, fName)
+				x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+				argList[n].append([fName, (x1,y1,x2,y2), self.param_.crop_size, b])
+		#Launch the jobs
 		for n in range(self.numIm_):
-			inArgs.append([self.wl_, imList[n], n])
-		try:
-			self.jobs_ = self.pool_.map_async(_load_images, inArgs)
-		except KeyboardInterrupt:
-			print 'Keyboard Interrupt received - terminating'
-			self.pool_.terminate()	
+			try:
+				self.jobs_[n] = self.pool_[n].map_async(image_reader, argList[n])
+			except KeyboardInterrupt:
+				print 'Keyboard Interrupt received - terminating'
+				self.pool_[n].terminate()	
 
+	def get_prefetch_data(self):
+		for n in range(self.numIm_):
+			cSt = n * self.ch_
+			cEn = cSt + self.ch_
+			t1 = time.time()
+			try:
+				imRes      = self.jobs_[n].get()
+			except KeyboardInterrupt:
+				print 'Keyboard Interrupt received - terminating'
+				self.pool_[n].terminate()	
+			t2= time.time()
+			tFetch = t2 - t1
+			for res in imRes:
+				if self.mu_ is not None:	
+					self.imData_[res[1],cSt:cEn,:,:] = res[0] - self.mu_
+				else:
+					self.imData_[res[1],cSt:cEn,:,:] = res[0]
+			#print ('%d, Fetching: %f, Copying: %f' % (n, tFetch, time.time()-t2))
+			#glog.info('%d, Fetching: %f, Copying: %f' % (n, tFetch, time.time()-t2))
+					
 	def forward(self, bottom, top):
 		t1 = time.time()
 		tDiff = t1 - self.t_
 		#Load the images
-		try:
-			imRes      = self.jobs_.get()
-		except KeyboardInterrupt:
-			print 'Keyboard Interrupt received - terminating'
-			self.pool_.terminate()	
+		self.get_prefetch_data()
+		top[0].data[...] = self.imData_
 		t2 = time.time()
 		tFetch = t2-t1
-		#print ('Loading took %fs in PythonWindowDataParallelLayer' % (t2-t1))
-		for res in imRes:
-			jobId, imData = res
-			cSt = jobId * self.ch_
-			cEn = cSt + self.ch_
-			top[0].data[:,cSt:cEn,:,:] = imData
 		#Read the labels
 		top[1].data[:,:,:,:] = self.labels_
 		self.launch_jobs()
 		t2 = time.time()
 		#print ('Forward took %fs in PythonWindowDataParallelLayer' % (t2-t1))
-		glog.info('Prev: %f, fetch: %f forward: %f' % (tDiff,tFetch, t2-t1))
+		#glog.info('Prev: %f, fetch: %f forward: %f' % (tDiff,tFetch, t2-t1))
 		self.t_ = time.time()
 
 	def backward(self, top, propagate_down, bottom):
