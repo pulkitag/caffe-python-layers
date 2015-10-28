@@ -242,6 +242,7 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		if self.param_.resume_iter > 0:
 			N = self.param_.resume_iter * self.param_.batch_size
 			N = np.mod(N, self.wl_.num_)
+			print ('SKIPPING AHEAD BY N example, BECAUSE resume_iter is NOT 0')
 			for n in range(N):
 				_, _ = self.read_next()	
 
