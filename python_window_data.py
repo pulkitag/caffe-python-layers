@@ -14,6 +14,8 @@ try:
 except:
 	print('OPEN CV not found, resorting to scipy.misc')
 
+IM_DATA = []
+
 def image_reader(args):
 	imName, imDims, cropSz, imNum = args
 	x1, y1, x2, y2 = imDims
@@ -140,8 +142,6 @@ class WindowLoader(object):
 		self.pool_       = poolsz
 	
 	def load_images(self, imNames, jobid):
-		if self.pool_ is not None:
-			return self.load_images_parallel(imNames, jobid)
 		imData = np.zeros((self.batch_size, self.ch,
 							self.crop_size, self.crop_size), np.float32)
 		for b in range(self.batch_size):
@@ -162,25 +162,6 @@ class WindowLoader(object):
 		imData = imData.astype(np.float32)
 		return jobid, imData
 
-	def load_images_parallel(self, imNames, jobid):
-		imData = np.zeros((self.batch_size, self.ch,
-							self.crop_size, self.crop_size), np.float32)
-		inArgs = []
-		for b in range(self.batch_size):
-			#Load images
-			imName, ch, h, w, x1, y1, x2, y2 = imNames[b].strip().split()
-			imName = osp.join(self.root_folder, imName)
-			x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-			inArgs.append([imName, (x1, y1, x2, y2), self.crop_size, b])	
-		jobs = READ_POOL.map_async(image_reader, inArgs)
-		res  = jobs.get()
-		for r in res:
-			imData[r[1],:,:,:] = r[0]
-		#Subtract the mean if needed
-		if self.mu is not None:
-			imData = imData - self.mu
-		imData = imData.astype(np.float32)
-		return jobid, imData
 
 
 def _load_images(args):
@@ -254,7 +235,7 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		#Create the pool
 		self.pool_, self.jobs_ = [], []
 		for n in range(self.numIm_):
-			self.pool_.append(Pool(processes=8))
+			self.pool_.append(Pool(processes=64))
 			self.jobs_.append([])
 		
 		self.imData_ = np.zeros((self.param_.batch_size, self.numIm_ * self.ch_,
