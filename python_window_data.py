@@ -241,10 +241,11 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		#are not read back
 		if self.param_.resume_iter > 0:
 			N = self.param_.resume_iter * self.param_.batch_size
-			N = np.mod(N, self.wl_.num_)
-			print ('SKIPPING AHEAD BY N example, BECAUSE resume_iter is NOT 0')
+			N = np.mod(N, self.wfid_.num_)
+			print ('SKIPPING AHEAD BY %d out of %d examples, BECAUSE resume_iter is NOT 0'\
+							 % (N, self.wfid_.num_))
 			for n in range(N):
-				_, _ = self.read_next()	
+				_, _ = self.wfid_.read_next()	
 
 		#Create the pool
 		self.num_threads = 16
@@ -281,7 +282,7 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 			if self.wfid_.is_eof():	
 				self.wfid_.close()
 				self.wfid_   = mpio.GenericWindowReader(self.param_.source)
-				print ('RESTARTING READ WINDOW FILE')
+				glog.info('RESTARTING READ WINDOW FILE')
 			imNames, lbls = self.wfid_.read_next()
 			self.labels_[b,:,:,:] = lbls.reshape(self.lblSz_,1,1).astype(np.float32) 
 			#Read images
