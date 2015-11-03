@@ -24,7 +24,6 @@ def image_reader(args):
 	im = cv2.resize(im[y1:y2, x1:x2, :],
 						(cropSz, cropSz))
 	im = im.transpose((2,0,1))
-	#glog.info('Processed')
 	return (im, imNum)
 
 def image_reader_list(args):
@@ -36,7 +35,6 @@ def image_reader_list(args):
 		im = cv2.resize(im[y1:y2, x1:x2, :],
 							(cropSz, cropSz))
 		outList.append((im.transpose((2,0,1)), imNum))
-	#glog.info('Processed')
 	return outList
 
 def image_reader_scm(args):
@@ -46,7 +44,6 @@ def image_reader_scm(args):
 	im = scm.imresize(im[y1:y2, x1:x2, :],
 						(cropSz, cropSz))
 	im = im[:,:,[2,1,0]].transpose((2,0,1))
-	#glog.info('Processed')
 	return (im, imNum)
 
 
@@ -268,6 +265,9 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		self.t_ = time.time()	
 
 	def launch_jobs(self):
+		if self.isV2:
+			self.launch_jobs_v2()
+			return
 		argList = []
 		for n in range(self.numIm_):
 			argList.append([])
@@ -289,14 +289,55 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		#Launch the jobs
 		for n in range(self.numIm_):
 			try:
-				#print (argList[n])
+				print (argList[n])
 				self.jobs_[n] = self.pool_[n].map_async(self.readfn_, argList[n])
 			except KeyboardInterrupt:
 				print 'Keyboard Interrupt received - terminating in launch jobs'
 				self.pool_[n].terminate()	
 
-	
+	def launch_jobs_v2(self):
+		argList = []
+		for n in range(self.numIm_):
+			argList.append([])
+		self.labels_ = np.zeros((self.param_.batch_size, self.lblSz_,1,1),np.float32)
+		#Form the list of images and labels
+		for b in range(self.param_.batch_size):
+			if self.wfid_.is_eof():	
+				self.wfid_.close()
+				self.wfid_   = mpio.GenericWindowReader(self.param_.source)
+				print ('RESTARTING READ WINDOW FILE')
+			imNames, lbls = self.wfid_.read_next()
+			self.labels_[b,:,:,:] = lbls.reshape(self.lblSz_,1,1).astype(np.float32) 
+			#Read images
+			for n in range(self.numIm_):
+				fName, ch, h, w, x1, y1, x2, y2 = imNames[n].strip().split()
+				fName  = osp.join(self.param_.root_folder, fName)
+				x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+				argList[n].append([fName, (x1,y1,x2,y2), self.param_.crop_size,
+									 b, self.param_.is_gray])
+		
+		#Launch the jobs
+		for n in range(self.numIm_):
+			#Distribute the jobs
+			jobPerm = [int(np.ceil(j)) for j in np.linspace(0,self.param_.batch_size,
+																			self.num_threads + 1)]
+			jobArgs = []
+			for j in range(self.num_threads):
+				st = jobPerm[j]
+				en = min(self.param_.batch_size, jobPerm[j+1])
+				jobArgs.append(argList[n][st:en])
+			assert (en >= self.param_.batch_size)
+			try:
+				print (jobArgs)
+				self.jobs_[n] = self.pool_[n].map_async(self.readfn_, jobArgs)
+			except KeyboardInterrupt:
+				print 'Keyboard Interrupt received - terminating'
+				self.pool_[n].terminate()	
+
 	def get_prefetch_data(self):
+		if self.isV2:
+			self.get_prefetch_data_v2()
+			return
 		for n in range(self.numIm_):
 			cSt = n * self.ch_
 			cEn = cSt + self.ch_
@@ -306,6 +347,7 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 			except:
 				print 'Keyboard Interrupt received - terminating'
 				self.pool_[n].terminate()	
+				pdb.set_trace()
 			t2= time.time()
 			tFetch = t2 - t1
 			for res in imRes:
@@ -316,6 +358,28 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 			#print ('%d, Fetching: %f, Copying: %f' % (n, tFetch, time.time()-t2))
 			#glog.info('%d, Fetching: %f, Copying: %f' % (n, tFetch, time.time()-t2))
 	
+	def get_prefetch_data_v2(self):
+		for n in range(self.numIm_):
+			cSt = n * self.ch_
+			cEn = cSt + self.ch_
+			t1 = time.time()
+			try:
+				jobRes      = self.jobs_[n].get()
+			except KeyboardInterrupt:
+				print 'Keyboard Interrupt received - terminating'
+				self.pool_[n].terminate()	
+			t2= time.time()
+			tFetch = t2 - t1
+			for imRes in jobRes:	
+				for res in imRes:
+					if self.mu_ is not None:	
+						self.imData_[res[1],cSt:cEn,:,:] = res[0] - self.mu_
+					else:
+						self.imData_[res[1],cSt:cEn,:,:] = res[0]
+			#print ('%d, Fetching: %f, Copying: %f' % (n, tFetch, time.time()-t2))
+			#glog.info('%d, Fetching: %f, Copying: %f' % (n, tFetch, time.time()-t2))
+
+				
 	def forward(self, bottom, top):
 		t1 = time.time()
 		tDiff = t1 - self.t_
