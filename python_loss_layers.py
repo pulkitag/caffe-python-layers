@@ -77,7 +77,7 @@ class L1LossWithIgnoreLayer(caffe.Layer):
 				count += 1
 		#pickle.dump({'pd': bottom[0].data, 'gt': bottom[1].data}, open('data_dump.pkl','w'))
 		#glog.info('%f, %d, %d' % (loss, count, self.batchSz_))
-		glog.info('%f, %f, %d' % (bottom[0].data[b,0], bottom[1].data[b,0], b))
+		#glog.info('%f, %f, %d' % (bottom[0].data[b,0], bottom[1].data[b,0], b))
 		if count == 0:
 			top[0].data[...] = 0.0
 		else:
