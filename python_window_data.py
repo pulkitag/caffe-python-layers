@@ -198,6 +198,8 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		parser.add_argument('--is_gray', dest='is_gray', action='store_true')
 		parser.add_argument('--no-is_gray', dest='is_gray', action='store_false')
 		parser.add_argument('--resume_iter', default=0, type=int)
+		parser.add_argument('--jitter_pct', default=0, type=float)
+		parser.add_argument('--jitter_amt', default=0, type=int)
 		args   = parser.parse_args(argsStr.split())
 		print('Using Config:')
 		pprint.pprint(args)
@@ -267,6 +269,31 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		self.launch_jobs()
 		self.t_ = time.time()	
 
+	def get_jitter(self, coords):
+		dx, dy = 0, 0
+		if self.param_.jitter_amt > 0:
+			rx, ry = np.random.random(), np.random.random()
+			dx, dy = rx * self.param_.jitter_amt, ry * self.param_.jitter_amt
+			if np.random.random() > 0.5:
+				dx = - dx
+			if np.random.random() > 0.5:
+				dy = -dy
+		
+		if self.param_.jitter_pct > 0:
+			h, w = [], []
+			for n in len(coords):
+				x1, y1, x2, y2 = coords[n]
+				h.append(y2 - y1)
+				w.append(x2 - x1)
+			mnH, mnW = min(h), min(w)
+			rx, ry = np.random.random(), np.random.random()
+			dx, dy = rx * mnW, ry * mnH
+			if np.random.random() > 0.5:
+				dx = - dx
+			if np.random.random() > 0.5:
+				dy = -dy
+		return dx, dy	
+
 	def launch_jobs(self):
 		argList = []
 		for n in range(self.numIm_):
@@ -281,10 +308,22 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 			imNames, lbls = self.wfid_.read_next()
 			self.labels_[b,:,:,:] = lbls.reshape(self.lblSz_,1,1).astype(np.float32) 
 			#Read images
+			fNames, coords = [], []
 			for n in range(self.numIm_):
 				fName, ch, h, w, x1, y1, x2, y2 = imNames[n].strip().split()
-				fName  = osp.join(self.param_.root_folder, fName)
+				fNames.append(osp.join(self.param_.root_folder, fName))
 				x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+				coords.append((x1, y1, x2, y2))
+			#Computing jittering if required
+			dx, dy = self.get_jitter(coords)
+			for n in range(self.numIm_):
+				fName = fNames[n]
+				x1, x2, y1, y2 = coords[n]
+				#Jitter the box
+				x1 = max(0, x1 + dx)
+				y1 = max(0, y1 + dy)
+				x2 = min(w, x2 + dx)
+				y2 = min(h, y2 + dy)
 				argList[n].append([fName, (x1,y1,x2,y2), self.param_.crop_size,b,self.param_.is_gray])
 		#Launch the jobs
 		for n in range(self.numIm_):
