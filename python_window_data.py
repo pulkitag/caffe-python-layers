@@ -225,7 +225,7 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 			self.mu_ = self.mu_[:,y1:y2,x1:x2]
 
 	def setup(self, bottom, top):
-		self.param_ = PythonWindowDataLayer.parse_args(self.param_str) 
+		self.param_ = PythonWindowDataParallelLayer.parse_args(self.param_str) 
 		self.wfid_   = mpio.GenericWindowReader(self.param_.source)
 		self.numIm_  = self.wfid_.numIm_
 		self.lblSz_  = self.wfid_.lblSz_
@@ -281,18 +281,18 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		
 		if self.param_.jitter_pct > 0:
 			h, w = [], []
-			for n in len(coords):
+			for n in range(len(coords)):
 				x1, y1, x2, y2 = coords[n]
 				h.append(y2 - y1)
 				w.append(x2 - x1)
 			mnH, mnW = min(h), min(w)
 			rx, ry = np.random.random(), np.random.random()
-			dx, dy = rx * mnW, ry * mnH
+			dx, dy = rx * mnW * self.param_.jitter_pct, ry * mnH * self.param_.jitter_pct
 			if np.random.random() > 0.5:
 				dx = - dx
 			if np.random.random() > 0.5:
 				dy = -dy
-		return dx, dy	
+		return int(dx), int(dy)	
 
 	def launch_jobs(self):
 		argList = []
@@ -318,12 +318,13 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 			dx, dy = self.get_jitter(coords)
 			for n in range(self.numIm_):
 				fName = fNames[n]
-				x1, x2, y1, y2 = coords[n]
+				x1, y1, x2, y2 = coords[n]
 				#Jitter the box
 				x1 = max(0, x1 + dx)
 				y1 = max(0, y1 + dy)
 				x2 = min(w, x2 + dx)
 				y2 = min(h, y2 + dy)
+				#glog.info('%d, %d, %d, %d' % (x1, y1, x2, y2))
 				argList[n].append([fName, (x1,y1,x2,y2), self.param_.crop_size,b,self.param_.is_gray])
 		#Launch the jobs
 		for n in range(self.numIm_):
