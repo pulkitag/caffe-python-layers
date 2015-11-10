@@ -1,0 +1,12 @@
+name: 'PythonBilliards'
+layer {
+  type: 'Python'
+  name: 'data'
+  top: 'data'
+  top: 'label'
+  python_param {
+    module: 'billiards'
+    layer: 'DataFetchLayer'
+    param_str: "--mnBallSz 15"
+  }
+}   
