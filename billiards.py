@@ -57,10 +57,12 @@ class DataFetchLayer(caffe.Layer):
 		self.play_cache_ = Queue.Queue(maxsize=self.params_.batchSz)
 		#The datastreams
 		self.plays_ = []
+		self.plays_len_ = [] #Stores the lenght of the games in #frames
 		self.plays_toe_ = [] #Stores the time of end of each play
 		self.plays_tfs_ = [] #Stores the time of start of each play
 		for j in range(self.params_.batchSz):
 			self.plays_.append([])
+			self.plays_len_.append(0)
 			self.plays_toe_.append(0)
 			self.plays_tfs_.append(0)
 		#Prepare the data and label vectors
@@ -106,6 +108,7 @@ class DataFetchLayer(caffe.Layer):
 			if self.plays_toe_[j] - self.params_.lookAhead < 0:
 				print ('I AM HERE', j)
 				self.plays_[j]     = self.get_cache_data()	
+				self.plays_len_[j] = len(self.plays_[j][0][0])	
 				self.plays_toe_[j] = len(self.plays_[j][0][0])
 				self.plays_tfs_[j] = 0
 			imBalls, force, _ = self.plays_[j]
@@ -115,7 +118,8 @@ class DataFetchLayer(caffe.Layer):
 				stCh = h * 3
 				enCh = stCh + 3
 				#print (stCh, enCh, h) 
-				h = max(0, len(self.plays_[j]) - self.plays_toe_[j] + h)
+				h = max(0, self.plays_len_[j] - self.plays_toe_[j] + h)
+				print (h)
 				#print (stCh, enCh, h, imBall[h].shape)
 				self.imdata_[j,:,:,stCh:enCh] = imBall[h][:,:,0:3]
 			stLbl = self.plays_tfs_[j]
