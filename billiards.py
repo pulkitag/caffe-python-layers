@@ -17,7 +17,7 @@ def wrapper_fetch_data(args):
 	rndSeed, params = args
 	params['randSeed'] = rndSeed
 	ds  = dio.DataSaver(**params)	
-	ims = ds.fetch(params['imSz'])
+	ims = ds.fetch(params['glimpseSz'])
 	#imNew = []
 	#for imBalls, f, p in ims:
 	#	imB = []
@@ -52,8 +52,10 @@ class DataFetchLayer(caffe.Layer):
 		parser.add_argument('--arenaSz',  default=667, type=int)
 		parser.add_argument('--batchSz',  default=16, type=int)
 		parser.add_argument('--imSz'   ,  default=128, type=int)
+		parser.add_argument('--glimpseSz', default=512, type=int)
 		parser.add_argument('--lookAhead',  default=10, type=int)
 		parser.add_argument('--history',  default=4, type=int)
+		parser.add_argument('--ncpu',   default=4, type=int)
 		args   = parser.parse_args(argsStr.split())
 		print('Using World Config:')
 		pprint.pprint(args)
@@ -70,7 +72,7 @@ class DataFetchLayer(caffe.Layer):
 		top[1].reshape(self.params_.batchSz, self.params_.lookAhead, 2, 1)	
 		print ('LOC 1')
 		#Start the pool of workers
-		self.pool_   = Pool(processes=16)
+		self.pool_   = Pool(processes=self.params_.ncpu)
 		print ('LOC 1.5')
 		self.jobs_   = deque()	
 		#Make a Queue for storing the game plays
@@ -149,7 +151,8 @@ class DataFetchLayer(caffe.Layer):
 				h = max(0, self.plays_len_[j] - self.plays_toe_[j] + h)
 				#print (h)
 				#print (stCh, enCh, h, imBall[h].shape)
-				self.imdata_[j,stCh:enCh,:,:] = imBall[h].transpose((2,0,1))
+				self.imdata_[j,stCh:enCh,:,:] = scm.imresize(imBall[h], 
+								(self.params_.imSz, self.params_.imSz)).transpose((2,0,1))
 			stLbl = self.plays_tfs_[j]
 			enLbl = stLbl + self.params_.lookAhead
 			for l in range(stLbl, enLbl):
