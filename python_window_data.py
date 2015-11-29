@@ -195,7 +195,6 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 	@classmethod
 	def parse_args(cls, argsStr):
 		parser = argparse.ArgumentParser(description='PythonWindowDataParallel Layer')
-		parser.add_argument('--num_threads', default=16, type=int)
 		parser.add_argument('--source', default='', type=str)
 		parser.add_argument('--root_folder', default='', type=str)
 		parser.add_argument('--mean_file', default='', type=str)
@@ -207,6 +206,7 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		parser.add_argument('--resume_iter', default=0, type=int)
 		parser.add_argument('--jitter_pct', default=0, type=float)
 		parser.add_argument('--jitter_amt', default=0, type=int)
+		parser.add_argument('--ncpu', default=2, type=int)
 		args   = parser.parse_args(argsStr.split())
 		print('Using Config:')
 		pprint.pprint(args)
@@ -255,10 +255,9 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 			for n in range(N):
 				_, _ = self.wfid_.read_next()	
 		#Create the pool
-		self.num_threads = 8
 		self.pool_, self.jobs_ = [], []
 		for n in range(self.numIm_):
-			self.pool_.append(Pool(processes=self.num_threads))
+			self.pool_.append(Pool(processes=self.num_param_.ncpu))
 			self.jobs_.append([])
 		
 		self.imData_ = np.zeros((self.param_.batch_size, self.numIm_ * self.ch_,
@@ -353,7 +352,9 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 				imRes      = self.jobs_[n].get()
 			except:
 				print 'Keyboard Interrupt received - terminating'
-				self.pool_[n].terminate()	
+				self.pool_[n].terminate()
+				#pdb.set_trace()
+				raise Exception('Error/Interrupt Encountered')	
 			t2= time.time()
 			tFetch = t2 - t1
 			for res in imRes:
