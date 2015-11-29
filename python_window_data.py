@@ -18,11 +18,13 @@ except:
 IM_DATA = []
 
 def image_reader(args):
-	imName, imDims, cropSz, imNum, isGray = args
+	imName, imDims, cropSz, imNum, isGray, isMirror = args
 	x1, y1, x2, y2 = imDims
 	im = cv2.imread(imName)
 	im = cv2.resize(im[y1:y2, x1:x2, :],
 						(cropSz, cropSz))
+	if isMirror and np.random.random() >= 0.5:
+		im = im[:,::-1,:]
 	im = im.transpose((2,0,1))
 	#glog.info('Processed')
 	return (im, imNum)
@@ -30,21 +32,25 @@ def image_reader(args):
 def image_reader_list(args):
 	outList = []
 	for ag in args:
-		imName, imDims, cropSz, imNum, isGray = ag
+		imName, imDims, cropSz, imNum, isGray, isMirror = ag
 		x1, y1, x2, y2 = imDims
 		im = cv2.imread(imName)
 		im = cv2.resize(im[y1:y2, x1:x2, :],
 							(cropSz, cropSz))
+		if isMirror and np.random.random() >= 0.5:
+			im = im[:,::-1,:]
 		outList.append((im.transpose((2,0,1)), imNum))
 	#glog.info('Processed')
 	return outList
 
 def image_reader_scm(args):
-	imName, imDims, cropSz, imNum, isGray = args
+	imName, imDims, cropSz, imNum, isGray, isMirror = args
 	x1, y1, x2, y2 = imDims
 	im = scm.imread(imName)
 	im = scm.imresize(im[y1:y2, x1:x2, :],
 						(cropSz, cropSz))
+	if isMirror and np.random.random() >= 0.5:
+		im = im[:,::-1,:]
 	im = im[:,:,[2,1,0]].transpose((2,0,1))
 	#glog.info('Processed')
 	return (im, imNum)
@@ -197,6 +203,7 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		parser.add_argument('--crop_size', default=192, type=int)
 		parser.add_argument('--is_gray', dest='is_gray', action='store_true')
 		parser.add_argument('--no-is_gray', dest='is_gray', action='store_false')
+		parser.add_argument('--is_mirror',  dest='is_mirror', action='store_true', default=False)
 		parser.add_argument('--resume_iter', default=0, type=int)
 		parser.add_argument('--jitter_pct', default=0, type=float)
 		parser.add_argument('--jitter_amt', default=0, type=int)
@@ -325,7 +332,8 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 				x2 = min(w, x2 + dx)
 				y2 = min(h, y2 + dy)
 				#glog.info('%d, %d, %d, %d' % (x1, y1, x2, y2))
-				argList[n].append([fName, (x1,y1,x2,y2), self.param_.crop_size,b,self.param_.is_gray])
+				argList[n].append([fName, (x1,y1,x2,y2), self.param_.crop_size,
+									 b, self.param_.is_gray, self.param_.is_mirror])
 		#Launch the jobs
 		for n in range(self.numIm_):
 			try:
