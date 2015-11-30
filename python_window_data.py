@@ -18,11 +18,13 @@ except:
 IM_DATA = []
 
 def image_reader(args):
-	imName, imDims, cropSz, imNum, isGray = args
+	imName, imDims, cropSz, imNum, isGray, isMirror = args
 	x1, y1, x2, y2 = imDims
 	im = cv2.imread(imName)
 	im = cv2.resize(im[y1:y2, x1:x2, :],
 						(cropSz, cropSz))
+	if isMirror and np.random.random() >= 0.5:
+		im = im[:,::-1,:]
 	im = im.transpose((2,0,1))
 	#glog.info('Processed')
 	return (im, imNum)
@@ -30,21 +32,25 @@ def image_reader(args):
 def image_reader_list(args):
 	outList = []
 	for ag in args:
-		imName, imDims, cropSz, imNum, isGray = ag
+		imName, imDims, cropSz, imNum, isGray, isMirror = ag
 		x1, y1, x2, y2 = imDims
 		im = cv2.imread(imName)
 		im = cv2.resize(im[y1:y2, x1:x2, :],
 							(cropSz, cropSz))
+		if isMirror and np.random.random() >= 0.5:
+			im = im[:,::-1,:]
 		outList.append((im.transpose((2,0,1)), imNum))
 	#glog.info('Processed')
 	return outList
 
 def image_reader_scm(args):
-	imName, imDims, cropSz, imNum, isGray = args
+	imName, imDims, cropSz, imNum, isGray, isMirror = args
 	x1, y1, x2, y2 = imDims
 	im = scm.imread(imName)
 	im = scm.imresize(im[y1:y2, x1:x2, :],
 						(cropSz, cropSz))
+	if isMirror and np.random.random() >= 0.5:
+		im = im[:,::-1,:]
 	im = im[:,:,[2,1,0]].transpose((2,0,1))
 	#glog.info('Processed')
 	return (im, imNum)
@@ -189,7 +195,6 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 	@classmethod
 	def parse_args(cls, argsStr):
 		parser = argparse.ArgumentParser(description='PythonWindowDataParallel Layer')
-		parser.add_argument('--num_threads', default=16, type=int)
 		parser.add_argument('--source', default='', type=str)
 		parser.add_argument('--root_folder', default='', type=str)
 		parser.add_argument('--mean_file', default='', type=str)
@@ -197,9 +202,11 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		parser.add_argument('--crop_size', default=192, type=int)
 		parser.add_argument('--is_gray', dest='is_gray', action='store_true')
 		parser.add_argument('--no-is_gray', dest='is_gray', action='store_false')
+		parser.add_argument('--is_mirror',  dest='is_mirror', action='store_true', default=False)
 		parser.add_argument('--resume_iter', default=0, type=int)
 		parser.add_argument('--jitter_pct', default=0, type=float)
 		parser.add_argument('--jitter_amt', default=0, type=int)
+		parser.add_argument('--ncpu', default=2, type=int)
 		args   = parser.parse_args(argsStr.split())
 		print('Using Config:')
 		pprint.pprint(args)
@@ -248,10 +255,9 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 			for n in range(N):
 				_, _ = self.wfid_.read_next()	
 		#Create the pool
-		self.num_threads = 8
 		self.pool_, self.jobs_ = [], []
 		for n in range(self.numIm_):
-			self.pool_.append(Pool(processes=self.num_threads))
+			self.pool_.append(Pool(processes=self.num_param_.ncpu))
 			self.jobs_.append([])
 		
 		self.imData_ = np.zeros((self.param_.batch_size, self.numIm_ * self.ch_,
@@ -325,7 +331,8 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 				x2 = min(w, x2 + dx)
 				y2 = min(h, y2 + dy)
 				#glog.info('%d, %d, %d, %d' % (x1, y1, x2, y2))
-				argList[n].append([fName, (x1,y1,x2,y2), self.param_.crop_size,b,self.param_.is_gray])
+				argList[n].append([fName, (x1,y1,x2,y2), self.param_.crop_size,
+									 b, self.param_.is_gray, self.param_.is_mirror])
 		#Launch the jobs
 		for n in range(self.numIm_):
 			try:
@@ -345,7 +352,9 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 				imRes      = self.jobs_[n].get()
 			except:
 				print 'Keyboard Interrupt received - terminating'
-				self.pool_[n].terminate()	
+				self.pool_[n].terminate()
+				#pdb.set_trace()
+				raise Exception('Error/Interrupt Encountered')	
 			t2= time.time()
 			tFetch = t2 - t1
 			for res in imRes:

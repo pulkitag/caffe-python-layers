@@ -1,0 +1,13 @@
+name: 'PythonBilliards'
+layer {
+  type: 'Python'
+  name: 'data'
+  top: 'data'
+  top: 'pos'
+	top: 'vel'
+  python_param {
+    module: 'billiards'
+    layer: 'DataFetchLayer'
+    param_str: "--mnBallSz 15 --ncpu=1 --batchSz 2 --posLabel --posVel --mnSeqLen 50 --lookAhead=10 --glimpseSz 512 --no-isForce"
+  }
+}   
