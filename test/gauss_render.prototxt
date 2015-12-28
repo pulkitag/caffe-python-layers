@@ -1,0 +1,17 @@
+name: 'IEFGauss'
+input: 'kp'
+input_dim: 1
+input_dim: 1
+input_dim: 2
+input_dim: 1
+layer {
+  type: 'Python'
+  name: 'render'
+  top: 'gauss'
+	bottom: 'kp'
+  python_param {
+    module: 'python_ief'
+    layer: 'GaussRenderLayer'
+    param_str: ""
+  }
+}   
