@@ -7,7 +7,9 @@ import scipy.misc as scm
 from easydict import EasyDict as edict
 from multiprocessing import Pool
 from collections import deque
-sys.path.append('/work4/pulkitag-code/code/physicsEngine')
+from pycaffe_config import cfg
+from os import path as osp
+sys.path.append(osp.join(cfg.BILLIARDS_CODE_PATH, 'code/physicsEngine'))
 import dataio as dio
 import pdb
 import Queue
