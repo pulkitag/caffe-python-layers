@@ -46,7 +46,8 @@ class GaussRenderLayer(caffe.Layer):
 			kps = bottom[0].data[b]
 			top[0].data[b][...] = self.param_.T
 			for k in range(self.nKp_):
-				y, x     = kps[k]
+				x, y     = kps[k]
+				x, y     = int(round(x + 1)), int(round(y + 1))
 				#Center at the gaussian windown
 				delY, delX = self.param_.imgSz - y, self.param_.imgSz - x
 				xSt, ySt   = max(0, delX), max(0, delY)
@@ -70,8 +71,8 @@ def test_render_layer(x=225, y = 250):
 	fig = plt.figure()
 	ax  = fig.add_subplot(1,1,1)
 	pos = np.zeros((1,1,2,1)).astype(np.float32)
-	pos[0,0,0] = y
-	pos[0,0,1] = x
+	pos[0,0,0] = x
+	pos[0,0,1] = y
 	data = net.forward(blobs=['gauss'], **{'kp': pos})
 	print (data['gauss'][0].transpose((1,2,0)).shape)
 	ax.imshow((data['gauss'][0].transpose((1,2,0)).squeeze() + 50.0).astype(np.uint8))
