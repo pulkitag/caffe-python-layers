@@ -63,6 +63,9 @@ class DataFetchLayer(caffe.Layer):
 		parser.add_argument('--lookAhead',  default=10, type=int)
 		parser.add_argument('--history',  default=4, type=int)
 		parser.add_argument('--ncpu',   default=6, type=int)
+		#The weighting of each step in the horizon for computing the gradients. 
+		parser.add_argument('--horWeightType', default='uniform', type=str)
+		parser.add_argument('--horWeightParam', default=1, type=float)
 		#Whether to have position instead of velocity labels
 		parser.add_argument('--posLabel', dest='posLabel', action='store_true', default=False)
 		#Whether to have position and velocity as labels or not
@@ -84,8 +87,13 @@ class DataFetchLayer(caffe.Layer):
 											 self.params_.imSz, self.params_.imSz)
 		top[1].reshape(self.params_.batchSz, self.params_.lookAhead, 2, 1)
 		if self.params_.posVel:
-			assert (len(top)==3)
+			assert (len(top)==4)
 			top[2].reshape(self.params_.batchSz, self.params_.lookAhead, 2, 1)
+			top[3].reshape(1, self.params_.lookAhead, 2, 1)
+		else:
+			#Weighting the horizon
+			top[2].reshape(1, self.params_.lookAhead, 2, 1)
+			
 		#Start the pool of workers
 		self.pool_   = Pool(processes=self.params_.ncpu)
 		self.jobs_   = deque()	
@@ -108,10 +116,13 @@ class DataFetchLayer(caffe.Layer):
 										2, 1), np.float32)
 		self.labels2_ = np.zeros((self.params_.batchSz, self.params_.lookAhead, 
 										2, 1), np.float32)
+		if self.params_.horWeightType == 'uniform':
+			self.horWeights_ = self.params_.horWeightParam * np.ones((1,
+												self.params_.lookAhead, 2, 1), np.float32)
 		#Set the mean and scaling
 		self.preproc  = edict()
 		if self.params_.whiteMean:
-			self.preproc['mu'] = 255
+			self.preproc['mu'] = 128
 		else:
 			self.preproc['mu'] = 0
 		self.preproc['scale'] = self.params_.scale	
@@ -211,6 +222,9 @@ class DataFetchLayer(caffe.Layer):
 		top[1].data[...] = self.labels_[...]
 		if self.params_.posVel:
 			top[2].data[...] = self.labels2_[...]
+			top[3].data[...] = self.horWeights_[...]
+		else:
+			top[2].data[...] = self.horWeights_[...]
 		tForward    = time.time() - self.tLast_
 		self.tLast_ = time.time()
 		glog.info('Forward: %f, Waiting for fetch: %f' % (tForward, tFetch))

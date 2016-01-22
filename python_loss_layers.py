@@ -9,6 +9,8 @@ import glog
 import pdb
 import pickle
 
+##
+#Simple L1 loss layer
 class L1LossLayer(caffe.Layer):
 	@classmethod
 	def parse_args(cls, argsStr):
@@ -45,6 +47,11 @@ class L1LossLayer(caffe.Layer):
 		top[0].reshape(1,1,1,1)
 		pass
 
+##
+#L1 loss layer, which the ability to ignore the loss computation for some examples
+#This can be done - by making gt labels of dimension N + 1, whereas the vectors
+#between which the error is being computed are N-D. If the (N+1)th dimension is set
+#to 1, it means that the example should be included otherwise not. 
 class L1LossWithIgnoreLayer(caffe.Layer):
 	@classmethod
 	def parse_args(cls, argsStr):
@@ -100,4 +107,48 @@ class L1LossWithIgnoreLayer(caffe.Layer):
 		top[0].reshape(1)
 		pass
 
+##
+#L1 loss layer which allows each dimension of |a - b| to weighted by a seperated weight
+#This is useful for instance when there is a lookahead and samples in the future should
+#be weighted less than current samples. 
+class L1LossWeightedLayer(caffe.Layer):
+	class L1LossWeightedLayer(caffe.Layer):
+	@classmethod
+	def parse_args(cls, argsStr):
+		parser = argparse.ArgumentParser(description='Python L1 Weighted Loss Layer')
+		parser.add_argument('--loss_weight', default=1.0, type=float)
+		args   = parser.parse_args(argsStr.split())
+		print('Using Config:')
+		pprint.pprint(args)
+		return args	
+		
+	def setup(self, bottom, top):
+		self.param_ = L1LossWeightedLayer.parse_args(self.param_str)
+		assert len(bottom) == 3, 'There should be three bottom blobs'
+		predShape = bottom[0].data.shape
+		gtShape   = bottom[1].data.shape
+		wtShape   = bottom[2].data.shape
+		for i in range(len(predShape)):
+			assert predShape[i] == gtShape[i], 'Mismatch: %d, %d' % (predShape[i], gtShape[i])
+			if i > 0:
+				assert gtShape[i] == wtShape[i],'Mismatch: %d, %d' % (wtShape[i], gtShape[i])
+				
+		#Get the batchSz
+		self.batchSz_ = gtShape[0]
+		#Form the top
+		assert len(top)==1, 'There should be only one output blob'
+		top[0].reshape(1,1,1,1)
+		
+	def forward(self, bottom, top):
+		wtErr = np.abs(bottom[0].data[...] - bottom[1].data[...]) * bottom[2].data[...]
+		top[0].data[...] = self.param_.loss_weight * np.sum(wtErr)/float(self.batchSz_)	
+		glog.info('Loss is %f' % top[0].data[0])
+	
+	def backward(self, top, propagate_down, bottom):
+		bottom[0].diff[...] = self.param_.loss_weight * bottom[2].data[...] *\
+			np.sign(bottom[0].data[...] - bottom[1].data[...])/float(self.batchSz_)
+		
+	def reshape(self, bottom, top):
+		top[0].reshape(1,1,1,1)
+		pass
 
