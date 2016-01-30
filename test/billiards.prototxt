@@ -8,6 +8,6 @@ layer {
   python_param {
     module: 'billiards'
     layer: 'DataFetchLayer'
-    param_str: "--mnBallSz 15 --ncpu=1 --batchSz 2 --posLabel --posVel --mnSeqLen 50 --lookAhead=10 --glimpseSz 512 --no-isForce"
+    param_str: "--mnBallSz 25 --ncpu=1 --batchSz 2 --posLabel --posVel --mnSeqLen 50 --mxSeqLen 50 --lookAhead=20 --glimpseSz 512 --no-isForce --mnForce=3e+5 --mxForce=3e+5 --arenaSz=700"
   }
 }   

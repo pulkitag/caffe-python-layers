@@ -385,10 +385,6 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		""" This layer has no backward """
 		pass
 	
-	def backward(self, top, propagate_down, bottom):
-		""" This layer has no backward """
-		pass
-
 	def reshape(self, bottom, top):
 		""" This layer has no reshape """
 		pass

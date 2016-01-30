@@ -63,6 +63,9 @@ class DataFetchLayer(caffe.Layer):
 		parser.add_argument('--lookAhead',  default=10, type=int)
 		parser.add_argument('--history',  default=4, type=int)
 		parser.add_argument('--ncpu',   default=6, type=int)
+		#The weighting of each step in the horizon for computing the gradients. 
+		parser.add_argument('--horWeightType', default='uniform', type=str)
+		parser.add_argument('--horWeightParam', default=1, type=float)
 		#Whether to have position instead of velocity labels
 		parser.add_argument('--posLabel', dest='posLabel', action='store_true', default=False)
 		#Whether to have position and velocity as labels or not
@@ -84,8 +87,13 @@ class DataFetchLayer(caffe.Layer):
 											 self.params_.imSz, self.params_.imSz)
 		top[1].reshape(self.params_.batchSz, self.params_.lookAhead, 2, 1)
 		if self.params_.posVel:
-			assert (len(top)==3)
+			assert (len(top)==4)
 			top[2].reshape(self.params_.batchSz, self.params_.lookAhead, 2, 1)
+			top[3].reshape(1, self.params_.lookAhead, 2, 1)
+		else:
+			#Weighting the horizon
+			top[2].reshape(1, self.params_.lookAhead, 2, 1)
+			
 		#Start the pool of workers
 		self.pool_   = Pool(processes=self.params_.ncpu)
 		self.jobs_   = deque()	
@@ -108,14 +116,18 @@ class DataFetchLayer(caffe.Layer):
 										2, 1), np.float32)
 		self.labels2_ = np.zeros((self.params_.batchSz, self.params_.lookAhead, 
 										2, 1), np.float32)
+		if self.params_.horWeightType == 'uniform':
+			self.horWeights_ = self.params_.horWeightParam * np.ones((1,
+												self.params_.lookAhead, 2, 1), np.float32)
 		#Set the mean and scaling
 		self.preproc  = edict()
 		if self.params_.whiteMean:
-			self.preproc['mu'] = 255
+			self.preproc['mu'] = 128
 		else:
 			self.preproc['mu'] = 0
 		self.preproc['scale'] = self.params_.scale	
-	
+
+		self.tLast_ = time.time()	
 		print ('SETUP DONE')
 		#Start loading the data
 		self.prefetch()
@@ -156,35 +168,29 @@ class DataFetchLayer(caffe.Layer):
 		im = im * self.preproc.scale
 		return im
 
+	##
 	def get_next_sample(self):
 		for j in range(self.params_.batchSz):
 			#Ensure samples can be taken for all batches
-			if self.plays_toe_[j] - self.params_.lookAhead < 0:
-				#print ('I AM HERE', j)
+			if self.plays_tfs_[j] + self.params_.lookAhead >= self.plays_len_[j]:
+				#Fetch a new example
 				self.plays_[j]     = self.get_cache_data()	
 				self.plays_len_[j] = len(self.plays_[j][0][0])
 				if self.params_.isForce:	
-					self.plays_toe_[j] = len(self.plays_[j][0][0])
 					self.plays_tfs_[j] = 0
 				else:
-					self.plays_toe_[j] = len(self.plays_[j][0][0]) - self.params_.lookAhead
-					self.plays_tfs_[j] = self.params_.lookAhead
-			#print len(self.plays_[j])
-			#print len(self.plays_[j][0])
+					self.plays_tfs_[j] = self.params_.history
+	
+			#Get the data
 			imBalls, force, vel, pos = self.plays_[j]
-			#For now just chose the first ball
-			imBall = imBalls[0]
+			imBall = imBalls[0] #Chosing the first ball by default
 			for h in range(self.params_.history):
-				stCh = h * 3
+				stCh = h * 3 #3 channels - RGB
 				enCh = stCh + 3
-				#print (stCh, enCh, h) 
-				h = max(0, self.plays_len_[j] - self.plays_toe_[j] + h - self.params_.history)
-				#print (h)
-				#print (stCh, enCh, h, imBall[h].shape)
+				h = max(0, self.plays_tfs_[j] + h - self.params_.history + 1)
 				ylen, xlen, numCh = imBall[h].shape
-				#self.imdata_[j,stCh:enCh,:,:] = scm.imresize(imBall[h], 
-				#				(self.params_.imSz, self.params_.imSz)).transpose((2,0,1))
 				self.imdata_[j, stCh:enCh, :, :] = self.preproc_image(imBall[h])
+				#For obtaining normalized positions/velocities
 				yScale, xScale = float(self.params_.imSz)/ylen, float(self.params_.imSz)/xlen
 				posScale = np.array([xScale, yScale]).reshape((2,1))
 			stLbl = self.plays_tfs_[j]
@@ -196,12 +202,13 @@ class DataFetchLayer(caffe.Layer):
 					self.labels2_[j,l-stLbl, 0:2] = vel[0:2,l].reshape((2,1))/10000 * posScale
 				else:
 					if self.params_.posLabel:
+						#Position labels required
 						self.labels_[j,l-stLbl, 0:2] = pos[0:2,l].reshape((2,1)) * posScale 
 					else:
 						self.labels_[j,l-stLbl, 0:2] = vel[0:2,l].reshape((2,1))/10000 * posScale
 			#Update the counts
+			#print (posScale)
 			self.plays_tfs_[j] += 1
-			self.plays_toe_[j] -= 1
 			
 							
 	def forward(self, bottom, top):
@@ -211,11 +218,16 @@ class DataFetchLayer(caffe.Layer):
 		self.get_next_sample()
 		t2= time.time()
 		tFetch = t2 - t1
-		glog.info('Waiting for fetch: %f'  %tFetch)
 		top[0].data[...] = self.imdata_[...]
 		top[1].data[...] = self.labels_[...]
 		if self.params_.posVel:
 			top[2].data[...] = self.labels2_[...]
+			top[3].data[...] = self.horWeights_[...]
+		else:
+			top[2].data[...] = self.horWeights_[...]
+		tForward    = time.time() - self.tLast_
+		self.tLast_ = time.time()
+		glog.info('Forward: %f, Waiting for fetch: %f' % (tForward, tFetch))
 
 	def backward(self, top, propagate_down, bottom):
 		""" This layer has no backward """
@@ -228,19 +240,19 @@ class DataFetchLayer(caffe.Layer):
 def vis_im(ax, ims, pos, vel):
 	im = ims[0:3,:,:].transpose((1,2,0))
 	im = np.uint8(im)
-	print im.shape
+	#print im.shape
 	ax.imshow(im)	
 	scale  = 10000
-	deltaT = 0.01
 	x, y = pos[0].squeeze()
-	cIdx = (255.0/40) * np.array(range(40))
+	cIdx = (255.0/20) * np.array(range(20))
 	for i in range(pos.shape[0]):
+		px, py = pos[i].squeeze()
 		vx, vy = vel[i].squeeze()
-		vx    = vx * scale * deltaT
-		vy    = vy * scale * deltaT
+		vx    = vx * scale
+		vy    = vy * scale
 		x     = x + vx
 		y     = y + vy
-		#print (x,y, vx, vy)
+		#print (x, px, y, py)
 		ax.plot(round(x), round(y), '.', color=cmap.jet(int(cIdx[i])),  markersize=10) 
 	plt.draw()
 	plt.show()
