@@ -1,0 +1,22 @@
+input: 'data'
+input_dim: 20
+input_dim: 3
+input_dim: 1
+input_dim: 1
+input: 'label'
+input_dim: 20
+input_dim: 3
+input_dim: 1
+input_dim: 1
+layer {
+  type: 'Python'
+  name: 'loss'
+  bottom: 'data'
+  bottom: 'label'
+	top: 'loss'
+  python_param {
+    module: 'python_loss_layers'
+    layer: 'L1LossLayer'
+    param_str: ""
+  }
+}   

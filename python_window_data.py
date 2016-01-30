@@ -257,7 +257,7 @@ class PythonWindowDataParallelLayer(caffe.Layer):
 		#Create the pool
 		self.pool_, self.jobs_ = [], []
 		for n in range(self.numIm_):
-			self.pool_.append(Pool(processes=self.num_param_.ncpu))
+			self.pool_.append(Pool(processes=self.param_.ncpu))
 			self.jobs_.append([])
 		
 		self.imData_ = np.zeros((self.param_.batch_size, self.numIm_ * self.ch_,
