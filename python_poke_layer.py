@@ -11,60 +11,76 @@ import time
 import glog
 import pdb
 
-def get_jitter(self, coords):
-	dx, dy = 0, 0
-	if self.param_.jitter_amt > 0:
-		rx, ry = np.random.random(), np.random.random()
-		dx, dy = rx * self.param_.jitter_amt, ry * self.param_.jitter_amt
-		if np.random.random() > 0.5:
-			dx = - dx
-		if np.random.random() > 0.5:
-			dy = -dy
-	
-	if self.param_.jitter_pct > 0:
-		h, w = [], []
-		for n in range(len(coords)):
-			x1, y1, x2, y2 = coords[n]
-			h.append(y2 - y1)
-			w.append(x2 - x1)
-		mnH, mnW = min(h), min(w)
-		rx, ry = np.random.random(), np.random.random()
-		dx, dy = rx * mnW * self.param_.jitter_pct, ry * mnH * self.param_.jitter_pct
-		if np.random.random() > 0.5:
-			dx = - dx
-		if np.random.random() > 0.5:
-			dy = -dy
-	return int(dx), int(dy)	
+def get_crop_coords(poke, H, W, crpSz, maxJitter=100):
+	'''
+		Crop a size of crpSz while assuring that the poke point is 
+		inside a central box of side maxJitter in the crop
+	'''
+	maxJitter = min(maxJitter, crpSz)
+	x1 = round(max(0, poke[0] - (crpSz -  maxJitter)/2 - maxJitter))
+	x2 = max(x1, round(min(W - crpSz, max(0, poke[0] - (crpSz - maxJitter)/2))))
+	y1 = round(max(0, poke[1] - (crpSz -  maxJitter)/2 - maxJitter))
+	y2 = max(y1, round(min(H - crpSz, max(0, poke[1] - (crpSz - maxJitter)/2))))
+	ySt   = int(np.random.random() * (y2 - y1) + y1)
+	xSt   = int(np.random.random() * (x2 - x1) + x1)
+	xEn, yEn = xSt + crpSz, ySt + crpSz
+	pk     = [poke[0] - xSt, poke[1] - ySt, poke[2]]
+	#Normalize pokes to range 0, 1
+	pk[0]  = (pk[0] - crpSz/2.0)/float(crpSz)
+	pk[1]  = (pk[1] - crpSz/2.0)/float(crpSz)
+	pk[2]  = pk[2] - np.pi/2
+	return xSt, ySt, xEn, yEn, pk
 
 
-def get_crop_coords(poke, H, W, crpSz):
-	#Trivial cropping
-	yMid, xMid = H/2, W/2
-	y1, x1     = yMid - crpSz/2, xMid - crpSz/2
-	y2, x2     = y1 + crpSz, x1 + crpSz
-	return x1, y1, x2, y2 	
+#ims   = np.zeros((128, 6, 192, 192)).astype(np.float32)
+#pokes = np.zeros((128, 3, 1, 1)).astype(np.float32) 
 
-def image_reader_keys(dbNames, dbKeys, crpSz, isCrop, isGray=False):
+#def image_reader_keys(dbNames, dbKeys, crpSz, isCrop, isGray=False):
+def image_reader_keys(*args):
+	dbNames, dbKeys, crpSz, isCrop, isGray = args
+	t1 = time.time()
 	bk,  ak,  pk   = dbKeys
 	db  = mpio.MultiDbReader(dbNames)
+	t15 = time.time()
+	openTime = t15 - t1
 	N   = len(bk)
-	ims   = np.zeros((N, 6, crpSz, crpSz)).astype(np.float32)
-	pokes = np.zeros((N, 3, 1, 1)).astype(np.float32) 
+	ims   = np.zeros((N, 6, crpSz, crpSz), np.uint8)
+	#ims   = np.zeros((N, 6, crpSz, crpSz))
+	pokes = np.zeros((N, 3, 1, 1), np.float32)
+	t2  = time.time()
+	preTime  = t2 - t15
+	readTime, procTime, tranTime, cropFnTime, cropTime = 0, 0, 0, 0, 0
 	for i in range(N):
+		t3 = time.time()
 		im1, im2, poke = db.read_key([bk[i], ak[i], pk[i]])
+		t4 = time.time()
+		readTime += t4 - t3
 		im1  = im1.transpose((0,2,1))
 		im2  = im2.transpose((0,2,1))
 		poke = poke.reshape((1,3,1,1))
+		t45  = time.time()
+		tranTime += t45 - t4
 		if isCrop:
-			H, W, _ = im1.shape
-			x1, y1, x2, y2 = get_crop_coords(poke.squeeze(), H, W, crpSz)
+			_, H, W = im1.shape
+			x1, y1, x2, y2, newPoke = get_crop_coords(poke.squeeze(), H, W, crpSz)
+			t47 = time.time()
+			cropFnTime += t47 - t45
+			#print (x1, y1, x2, y2)
 			ims[i, 0:3] = im1[:, y1:y2, x1:x2]
 			ims[i, 3:6] = im2[:, y1:y2, x1:x2]
+			t48 = time.time()
+			cropTime += t48 - t47
 		else:
 			ims[i, 0:3] = scm.imresize(im1, (crpSz, crpSz))
 			ims[i, 3:6] = scm.imresize(im2, (crpSz, crpSz))
-		pokes[i][...] = poke[...]
-	db.close()
+		pokes[i][...] = np.array(newPoke).reshape((3,1,1))
+		t5 = time.time()
+		procTime += t5 - t4
+	#db.close()
+	print '#####################'
+	print 'Open-Time: %f, Pre-Time: %f, Read-Time: %f, Proc-Time: %f' % (openTime, preTime, readTime, procTime)
+	print 'CropFnTime: %f, Crop-Time: %f, Transpose Time: %f' % (cropFnTime, cropTime, tranTime)
+	print '#####################'
 	return ims, pokes
 
 	
@@ -83,9 +99,8 @@ class PythonPokeLayer(caffe.Layer):
 		parser.add_argument('--no-is_gray', dest='is_gray', action='store_false')
 		parser.add_argument('--is_mirror',  dest='is_mirror', action='store_true', default=False)
 		parser.add_argument('--resume_iter', default=0, type=int)
-		parser.add_argument('--jitter_pct', default=0, type=float)
-		parser.add_argument('--jitter_amt', default=0, type=int)
-		parser.add_argument('--ncpu', default=2, type=int)
+		parser.add_argument('--max_jitter', default=0, type=int)
+		parser.add_argument('--is_prefetch', default=0, type=int)
 		parser.add_argument('--randSeed', default=3, type=int)
 		args   = parser.parse_args(argsStr.split())
 		print('Using Config:')
@@ -111,10 +126,10 @@ class PythonPokeLayer(caffe.Layer):
 
 	def setup(self, bottom, top):
 		self.param_ = PythonPokeLayer.parse_args(self.param_str)
-		rf  = self.params_.root_folder
-		self.dbNames_ = [osp.join(rf, self.params_.before),
-									   osp.join(rf, self.params_.after),
-									   osp.join(rf, self.params_.poke)] 
+		rf  = self.param_.root_folder
+		self.dbNames_ = [osp.join(rf, self.param_.before),
+									   osp.join(rf, self.param_.after),
+									   osp.join(rf, self.param_.poke)] 
 		#Read Keys
 		self.dbKeys_ = []
 		for name in self.dbNames_:
@@ -127,6 +142,7 @@ class PythonPokeLayer(caffe.Layer):
 		self.numKey_ = len(self.dbKeys_[0]) 	
 		#Poke layer has 2 input images
 		self.numIm_ = 2
+		self.lblSz_ = 3
 		if self.param_.is_gray:
 			self.ch_ = 1
 		else:
@@ -140,12 +156,14 @@ class PythonPokeLayer(caffe.Layer):
 		if self.param_.resume_iter > 0:
 			N = self.param_.resume_iter * self.param_.batch_size
 			N = np.mod(N, self.wfid_.num_)
-			print ('SKIPPING AHEAD BY %d out of %d examples,
+			print ('SKIPPING AHEAD BY %d out of %d examples,\
 						  BECAUSE resume_iter is NOT 0'\
 							% (N, self.wfid_.num_))
 		#Create the pool
-		self.pool_ = Pool(processes=self.num_param_.ncpu)
-		self.jobs_ = []
+		self.isPrefetch_ = bool(self.param_.is_prefetch)
+		if self.isPrefetch_:
+			self.pool_ = Pool(processes=1)
+			self.jobs_ = []
 	
 		#Storing the image data	
 		self.imData_ = np.zeros((self.param_.batch_size, 
@@ -153,42 +171,58 @@ class PythonPokeLayer(caffe.Layer):
 						self.param_.crop_size, self.param_.crop_size), np.float32)
 		self.labels_ = np.zeros((self.param_.batch_size, 
 						self.lblSz_,1,1),np.float32)
+		self.argList_ = []
 		#Function to read the images
-		self.readfn_ = image_reader_list
-		#Launch the prefetching	
-		self.launch_jobs()
+		self.readfn_ = image_reader_keys
+		#Launch the prefetching
+		if self.isPrefetch_:	
+			self.launch_jobs()
 		self.t_ = time.time()	
 
-	
-	def launch_jobs(self):
-		argList = []
+	def _make_arglist(self):
+		self.argList_ = []
 		enKey   = self.stKey_ + self.param_.batch_size
 		if  enKey > self.numKey_:
 			wrap = np.mod(enKey, self.numKey_)
-			keys = range(self.stKey_, self.param_.batch_size) + 
+			keys = range(self.stKey_, self.numKey_) +\
 						 range(wrap)
 			self.stKey_ = wrap
 		else:
 			keys = range(self.stKey_, enKey)
-			self.stKey_ = enKey		
-		argList = [self.dbNames_, [self.dbKeys_[0][keys],
-						   self.dbKeys_[1][keys], self.dbKeys_[2][keys]], 
-							 self.param_.crop_size, True, self.param_.is_gray]
+			self.stKey_ = enKey
+		self.argList_ = [self.dbNames_, 
+							 [[self.dbKeys_[0][k] for k in keys],
+						   [self.dbKeys_[1][k] for k in keys],
+							 [self.dbKeys_[2][k] for k in keys]],
+               self.param_.crop_size, True, self.param_.is_gray]
+
+	
+	def launch_jobs(self):
+		self._make_arglist()
 		try:
-			self.jobs_ = self.pool_.map_async(self.readfn_, argList)
+			print ('PREFETCH STARTED')
+			self.jobs_ = self.pool_.map_async(self.readfn_, self.argList_)
 		except KeyboardInterrupt:
 			print 'Keyboard Interrupt received - terminating in launch jobs'
 			self.pool_.terminate()	
 
 	def get_prefetch_data(self):
 		t1 = time.time()
-		try:
-			res      = self.jobs_.get()
-			im, self.labels_[...]  = res
-		except:
-			print 'Keyboard Interrupt received - terminating'
-			self.pool_.terminate()
-			raise Exception('Error/Interrupt Encountered')	
+		if self.isPrefetch_:
+			try:
+				print ('GETTING PREFECH')
+				res      = self.jobs_.get()
+				print ('PREFETCH GOT')	
+				im, self.labels_[...]  = res
+			except:
+				print 'Keyboard Interrupt received - terminating'
+				self.pool_.terminate()
+				raise Exception('Error/Interrupt Encountered')
+		else:
+			self._make_arglist()
+			im, self.labels_[...] = self.readfn_(*self.argList_)
+			#self.readfn_(*self.argList_)
+	
 		t2= time.time()
 		tFetch = t2 - t1
 		if self.mu_ is not None:	
@@ -206,9 +240,9 @@ class PythonPokeLayer(caffe.Layer):
 		tFetch = t2-t1
 		#Read the labels
 		top[1].data[:,:,:,:] = self.labels_
-		self.launch_jobs()
+		if self.isPrefetch_:
+			self.launch_jobs()
 		t2 = time.time()
-		#print ('Forward took %fs in PythonWindowDataParallelLayer' % (t2-t1))
 		glog.info('Prev: %f, fetch: %f forward: %f' % (tDiff,tFetch, t2-t1))
 		self.t_ = time.time()
 
@@ -219,3 +253,24 @@ class PythonPokeLayer(caffe.Layer):
 	def reshape(self, bottom, top):
 		""" This layer has no reshape """
 		pass
+
+
+def test_poke_layer(isPlot=True):
+	import vis_utils as vu
+	import matplotlib.pyplot as plt
+	fig     = plt.figure()
+	defFile = 'test/poke_layer.prototxt'
+	net     = caffe.Net(defFile, caffe.TEST)
+	while True:
+		data   = net.forward(blobs=['im', 'poke'])
+		im, pk = data['im'], data['poke']
+		if isPlot:
+			for b in range(10):
+				ax = vu.plot_pairs(im[b,0:3], im[b,3:6], isBlobFormat=True, chSwap=(2,1,0), fig=fig)
+				ax[0].plot(int(pk[b][0]), int(pk[b][1]), markersize=10, marker='o')
+				plt.draw()
+				plt.show()
+				ip = raw_input()
+				if ip == 'q':
+					return	
+

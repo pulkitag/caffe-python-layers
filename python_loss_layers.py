@@ -28,20 +28,21 @@ class L1LossLayer(caffe.Layer):
 		gtShape   = bottom[1].data.shape
 		for i in range(len(predShape)):
 			assert predShape[i] == gtShape[i], 'Mismatch: %d, %d' % (predShape[i], gtShape[i])
-		#Get the batchSz
+		assert bottom[0].data.squeeze().ndim == bottom[1].data.squeeze().ndim, 'Shape Mismatch'
+  	#Get the batchSz
 		self.batchSz_ = gtShape[0]
 		#Form the top
 		assert len(top)==1, 'There should be only one output blob'
 		top[0].reshape(1,1,1,1)
 		
 	def forward(self, bottom, top):
-		top[0].data[...] = self.param_.loss_weight * np.sum(np.abs(bottom[0].data[...]\
-													 - bottom[1].data[...]))/float(self.batchSz_)	
+		top[0].data[...] = self.param_.loss_weight * np.sum(np.abs(bottom[0].data[...].squeeze()\
+													 - bottom[1].data[...].squeeze()))/float(self.batchSz_)	
 		glog.info('Loss is %f' % top[0].data[0])
 	
 	def backward(self, top, propagate_down, bottom):
-		bottom[0].diff[...] = self.param_.loss_weight * np.sign(bottom[0].data[...]\
-														 - bottom[1].data[...])/float(self.batchSz_)
+		bottom[0].diff[...] = self.param_.loss_weight * np.sign(bottom[0].data[...].squeeze()\
+														 - bottom[1].data[...].squeeze())/float(self.batchSz_)
 		
 	def reshape(self, bottom, top):
 		top[0].reshape(1,1,1,1)
@@ -112,7 +113,6 @@ class L1LossWithIgnoreLayer(caffe.Layer):
 #This is useful for instance when there is a lookahead and samples in the future should
 #be weighted less than current samples. 
 class L1LossWeightedLayer(caffe.Layer):
-	class L1LossWeightedLayer(caffe.Layer):
 	@classmethod
 	def parse_args(cls, argsStr):
 		parser = argparse.ArgumentParser(description='Python L1 Weighted Loss Layer')
