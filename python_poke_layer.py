@@ -93,6 +93,7 @@ class PythonPokeLayer(caffe.Layer):
 		parser.add_argument('--poke',  default='', type=str)
 		parser.add_argument('--root_folder', default='', type=str)
 		parser.add_argument('--mean_file', default='', type=str)
+		parser.add_argument('--mean_type', default='3val', type=str)
 		parser.add_argument('--batch_size', default=128, type=int)
 		parser.add_argument('--crop_size', default=192, type=int)
 		parser.add_argument('--is_gray', dest='is_gray', action='store_true')
@@ -113,9 +114,17 @@ class PythonPokeLayer(caffe.Layer):
 	def load_mean(self):
 		self.mu_ = None
 		if len(self.param_.mean_file) > 0:
-			#Mean is assumbed to be in BGR format
-			self.mu_ = mp.read_mean(self.param_.mean_file)
-			self.mu_ = self.mu_.astype(np.float32)
+			print ('READING MEAN FROM %s', self.param_.mean_file)
+			if self.param_.mean_file[-3:] == 'pkl':
+				meanDat  = pickle.open(self.param_.mean_file, 'r')
+				self.mu_ = meanDat['mu'].astype(np.float32).transpose((2,0,1))
+			else:
+				#Mean is assumbed to be in BGR format
+				self.mu_ = mp.read_mean(self.param_.mean_file)
+				self.mu_ = self.mu_.astype(np.float32)
+		if self.param_.mean_type == '3val':
+			self.mu_   = np.mean(self.mu_, axis=[1,2]).reshape(1,3,1,1)
+		elif self.param_.mean_type == 'img':
 			ch, h, w = self.mu_.shape
 			assert (h >= self.param_.crop_size and w >= self.param_.crop_size)
 			y1 = int(h/2 - (self.param_.crop_size/2))
@@ -123,6 +132,9 @@ class PythonPokeLayer(caffe.Layer):
 			y2 = int(y1 + self.param_.crop_size)
 			x2 = int(x1 + self.param_.crop_size)
 			self.mu_ = self.mu_[:,y1:y2,x1:x2]
+			self.mu_ = self.mu_.reshape((1,) + self.mu_.shape)
+		else:
+			raise Exception('Mean type %s not recognized' % self.param_.mean_type)
 
 	def setup(self, bottom, top):
 		self.param_ = PythonPokeLayer.parse_args(self.param_str)
