@@ -10,6 +10,7 @@ from easydict import EasyDict as edict
 import time
 import glog
 import pdb
+import pickle
 
 def get_crop_coords(poke, H, W, crpSz, maxJitter=100):
 	'''
@@ -116,14 +117,15 @@ class PythonPokeLayer(caffe.Layer):
 		if len(self.param_.mean_file) > 0:
 			print ('READING MEAN FROM %s', self.param_.mean_file)
 			if self.param_.mean_file[-3:] == 'pkl':
-				meanDat  = pickle.open(self.param_.mean_file, 'r')
+				meanDat  = pickle.load(open(self.param_.mean_file, 'r'))
 				self.mu_ = meanDat['mu'].astype(np.float32).transpose((2,0,1))
 			else:
 				#Mean is assumbed to be in BGR format
 				self.mu_ = mp.read_mean(self.param_.mean_file)
 				self.mu_ = self.mu_.astype(np.float32)
 		if self.param_.mean_type == '3val':
-			self.mu_   = np.mean(self.mu_, axis=[1,2]).reshape(1,3,1,1)
+			self.mu_   = np.mean(self.mu_, axis=(1,2)).reshape(1,3,1,1)
+			self.mu_   = np.concatenate((self.mu_, self.mu_), axis=1)
 		elif self.param_.mean_type == 'img':
 			ch, h, w = self.mu_.shape
 			assert (h >= self.param_.crop_size and w >= self.param_.crop_size)
