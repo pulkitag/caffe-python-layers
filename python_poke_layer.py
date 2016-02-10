@@ -26,19 +26,35 @@ def get_crop_coords(poke, H, W, crpSz, maxJitter=100):
 	xSt   = int(np.random.random() * (x2 - x1) + x1)
 	xEn, yEn = xSt + crpSz, ySt + crpSz
 	pk     = [poke[0] - xSt, poke[1] - ySt, poke[2]]
-	#Normalize pokes to range 0, 1
-	pk[0]  = (pk[0] - crpSz/2.0)/float(crpSz)
-	pk[1]  = (pk[1] - crpSz/2.0)/float(crpSz)
-	pk[2]  = pk[2] - np.pi/2
 	return xSt, ySt, xEn, yEn, pk
 
 
 #ims   = np.zeros((128, 6, 192, 192)).astype(np.float32)
 #pokes = np.zeros((128, 3, 1, 1)).astype(np.float32) 
 
+def transform_poke(pk, **kwargs):
+	if kwargs['tfmType'] is None:
+		#Normalize pokes to range 0, 1
+		crpSz = kwargs['crpSz']
+		pk[0]  = (pk[0] - crpSz/2.0)/float(crpSz)
+		pk[1]  = (pk[1] - crpSz/2.0)/float(crpSz)
+		pk[2]  = pk[2] - np.pi/2
+		return pk
+	elif kwargs['tfmType'] == 'gridCls':
+		print pk
+		xBins, yBins, tBins = kwargs['xBins'], kwargs['yBins'], kwargs['tBins']
+		xBn = np.where(pk[0] >= xBins)[0][-1]
+		yBn = np.where(pk[1] >= yBins)[0][-1]
+		tBn = np.where(pk[2] >= tBins)[0][-1]
+		nX, nY = kwargs['nX'], kwargs['nY']
+		print (yBn, xBn)
+		bnIdx  = yBn * nY + xBn
+		return (bnIdx, tBn)				
+		
+
 #def image_reader_keys(dbNames, dbKeys, crpSz, isCrop, isGray=False):
 def image_reader_keys(*args):
-	dbNames, dbKeys, crpSz, isCrop, isGray = args
+	dbNames, dbKeys, crpSz, isCrop, isGray, pkTfm = args
 	t1 = time.time()
 	bk,  ak,  pk   = dbKeys
 	db  = mpio.MultiDbReader(dbNames)
@@ -46,8 +62,7 @@ def image_reader_keys(*args):
 	openTime = t15 - t1
 	N   = len(bk)
 	ims   = np.zeros((N, 6, crpSz, crpSz), np.uint8)
-	#ims   = np.zeros((N, 6, crpSz, crpSz))
-	pokes = np.zeros((N, 3, 1, 1), np.float32)
+	pokes = np.zeros((N, pkTfm['lblSz'], 1, 1), np.float32)
 	t2  = time.time()
 	preTime  = t2 - t15
 	readTime, procTime, tranTime, cropFnTime, cropTime = 0, 0, 0, 0, 0
@@ -74,7 +89,9 @@ def image_reader_keys(*args):
 		else:
 			ims[i, 0:3] = scm.imresize(im1, (crpSz, crpSz))
 			ims[i, 3:6] = scm.imresize(im2, (crpSz, crpSz))
-		pokes[i][...] = np.array(newPoke).reshape((3,1,1))
+		tfmPoke = transform_poke(newPoke, **pkTfm)
+		print tfmPoke 
+		pokes[i][...] = np.array(tfmPoke).reshape((pkTfm['lblSz'],1,1))
 		t5 = time.time()
 		procTime += t5 - t4
 	#db.close()
@@ -89,13 +106,19 @@ class PythonPokeLayer(caffe.Layer):
 	@classmethod
 	def parse_args(cls, argsStr):
 		parser = argparse.ArgumentParser(description='PythonPokeLayer')
+		parser.add_argument('--batch_size', default=128, type=int)
 		parser.add_argument('--before', default='', type=str)
 		parser.add_argument('--after',  default='', type=str)
 		parser.add_argument('--poke',  default='', type=str)
 		parser.add_argument('--root_folder', default='', type=str)
 		parser.add_argument('--mean_file', default='', type=str)
 		parser.add_argument('--mean_type', default='3val', type=str)
-		parser.add_argument('--batch_size', default=128, type=int)
+		parser.add_argument('--poke_tfm_type', default='', type=str)
+		parser.add_argument('--poke_nxGrid', default=15, type=str)
+		parser.add_argument('--poke_nyGrid', default=15, type=int)
+		parser.add_argument('--poke_thGrid', default=15, type=int)
+		parser.add_argument('--poke_mnTheta', default=np.pi/4, type=float)
+		parser.add_argument('--poke_mxTheta', default=3*np.pi/4, type=float)
 		parser.add_argument('--crop_size', default=192, type=int)
 		parser.add_argument('--is_gray', dest='is_gray', action='store_true')
 		parser.add_argument('--no-is_gray', dest='is_gray', action='store_false')
@@ -104,6 +127,8 @@ class PythonPokeLayer(caffe.Layer):
 		parser.add_argument('--max_jitter', default=0, type=int)
 		parser.add_argument('--is_prefetch', default=0, type=int)
 		parser.add_argument('--randSeed', default=3, type=int)
+		parser.add_argument('--is_debug', dest='is_gray', action='store_true', default=False)
+		parser.add_argument('--no-is_debug', dest='is_gray', action='store_false')
 		args   = parser.parse_args(argsStr.split())
 		print('Using Config:')
 		pprint.pprint(args)
@@ -123,20 +148,20 @@ class PythonPokeLayer(caffe.Layer):
 				#Mean is assumbed to be in BGR format
 				self.mu_ = mp.read_mean(self.param_.mean_file)
 				self.mu_ = self.mu_.astype(np.float32)
-		if self.param_.mean_type == '3val':
-			self.mu_   = np.mean(self.mu_, axis=(1,2)).reshape(1,3,1,1)
-			self.mu_   = np.concatenate((self.mu_, self.mu_), axis=1)
-		elif self.param_.mean_type == 'img':
-			ch, h, w = self.mu_.shape
-			assert (h >= self.param_.crop_size and w >= self.param_.crop_size)
-			y1 = int(h/2 - (self.param_.crop_size/2))
-			x1 = int(w/2 - (self.param_.crop_size/2))
-			y2 = int(y1 + self.param_.crop_size)
-			x2 = int(x1 + self.param_.crop_size)
-			self.mu_ = self.mu_[:,y1:y2,x1:x2]
-			self.mu_ = self.mu_.reshape((1,) + self.mu_.shape)
-		else:
-			raise Exception('Mean type %s not recognized' % self.param_.mean_type)
+			if self.param_.mean_type == '3val':
+				self.mu_   = np.mean(self.mu_, axis=(1,2)).reshape(1,3,1,1)
+				self.mu_   = np.concatenate((self.mu_, self.mu_), axis=1)
+			elif self.param_.mean_type == 'img':
+				ch, h, w = self.mu_.shape
+				assert (h >= self.param_.crop_size and w >= self.param_.crop_size)
+				y1 = int(h/2 - (self.param_.crop_size/2))
+				x1 = int(w/2 - (self.param_.crop_size/2))
+				y2 = int(y1 + self.param_.crop_size)
+				x2 = int(x1 + self.param_.crop_size)
+				self.mu_ = self.mu_[:,y1:y2,x1:x2]
+				self.mu_ = self.mu_.reshape((1,) + self.mu_.shape)
+			else:
+				raise Exception('Mean type %s not recognized' % self.param_.mean_type)
 
 	def setup(self, bottom, top):
 		self.param_ = PythonPokeLayer.parse_args(self.param_str)
@@ -154,9 +179,31 @@ class PythonPokeLayer(caffe.Layer):
 			del db 	
 		self.stKey_  = 0
 		self.numKey_ = len(self.dbKeys_[0]) 	
+	
+		self.pkParams_ = {}
+		self.pkParams_['tfmType'] = self.param_.poke_tfm_type
+		if self.param_.poke_tfm_type is None:
+			self.pkParams_['xBins'], self.pkParams_['yBins'] = None, None
+			self.pkParams_['tBins'] = None
+			self.lblSz_ = 3
+		elif self.param_.poke_tfm_type == 'gridCls':
+			#Grid classification
+			nXGrid, nYGrid = self.param_.poke_nxGrid, self.param_.poke_nyGrid
+			thGrid         = self.param_.poke_thGrid
+			nY, nX = self.param_.crop_size, self.param_.crop_size 
+			self.pkParams_['xBins']   = np.linspace(0, nX, nXGrid)
+			self.pkParams_['yBins']   = np.linspace(0, nY, nYGrid) 
+			self.pkParams_['tBins']   = np.linspace(self.param_.poke_mnTheta,
+																	self.param_.poke_mxTheta, thGrid)
+			self.pkParams_['nX']      = nXGrid
+			self.pkParams_['nY']      = nYGrid
+			self.lblSz_ = 2
+		self.pkParams_['lblSz']  = self.lblSz_
+		self.pkParams_['crpSz']  = self.param_.crop_size
+		
+		print self.pkParams_
 		#Poke layer has 2 input images
 		self.numIm_ = 2
-		self.lblSz_ = 3
 		if self.param_.is_gray:
 			self.ch_ = 1
 		else:
@@ -164,6 +211,7 @@ class PythonPokeLayer(caffe.Layer):
 		top[0].reshape(self.param_.batch_size, self.numIm_ * self.ch_,
 										self.param_.crop_size, self.param_.crop_size)
 		top[1].reshape(self.param_.batch_size, self.lblSz_, 1, 1)
+
 		#Load the mean
 		self.load_mean()
 		#If needed to resume	
@@ -208,9 +256,9 @@ class PythonPokeLayer(caffe.Layer):
 							 [[self.dbKeys_[0][k] for k in keys],
 						   [self.dbKeys_[1][k] for k in keys],
 							 [self.dbKeys_[2][k] for k in keys]],
-               self.param_.crop_size, True, self.param_.is_gray]
+               self.param_.crop_size, True, self.param_.is_gray,
+							 self.pkParams_]
 
-	
 	def launch_jobs(self):
 		self._make_arglist()
 		try:
@@ -269,7 +317,7 @@ class PythonPokeLayer(caffe.Layer):
 		pass
 
 
-def test_poke_layer(isPlot=True):
+def test_poke_layer_regression(isPlot=True):
 	import vis_utils as vu
 	import matplotlib.pyplot as plt
 	fig     = plt.figure()
@@ -282,6 +330,37 @@ def test_poke_layer(isPlot=True):
 			for b in range(10):
 				ax = vu.plot_pairs(im[b,0:3], im[b,3:6], isBlobFormat=True, chSwap=(2,1,0), fig=fig)
 				ax[0].plot(int(pk[b][0]), int(pk[b][1]), markersize=10, marker='o')
+				plt.draw()
+				plt.show()
+				ip = raw_input()
+				if ip == 'q':
+					return	
+
+def test_poke_layer_cls(isPlot=True):
+	import vis_utils as vu
+	import matplotlib.pyplot as plt
+	fig     = plt.figure()
+	defFile = 'test/poke_cls_layer.prototxt'
+	net     = caffe.Net(defFile, caffe.TEST)
+	while True:
+		data   = net.forward(blobs=['im', 'poke'])
+		im, pk = data['im'], data['poke']
+		shp    = im.shape
+		print (shp)
+		if isPlot:
+			for b in range(10):
+				pkBin = pk[b][0].squeeze()
+				by    = int(np.floor(pkBin / np.float(15)))
+				bx    = int(np.mod(pkBin, 15))
+				pkIm  = np.zeros((15, 15, 3)).astype(np.uint8)
+				pkIm[by, bx,:] = np.array((255,0,0))
+				pkIm  = scm.imresize(pkIm, (shp[2], shp[3]))
+				pkIm  = pkIm.transpose((2,0,1)).reshape((1,3, shp[2], shp[3]))
+				imBefore = im[b, 0:3] / 2 + pkIm[0] / 2
+				ax    = vu.plot_n_ims([imBefore, im[b,3:6], pkIm[0]],\
+								 isBlobFormat=True, chSwap=(2,1,0), fig=fig)
+				#ax[0].plot(int(pk[b][0]), int(pk[b][1]), markersize=10, marker='o')
+				print pk[b]
 				plt.draw()
 				plt.show()
 				ip = raw_input()

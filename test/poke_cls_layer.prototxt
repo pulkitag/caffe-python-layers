@@ -1,0 +1,12 @@
+name: 'PythonPoke'
+layer {
+  type: 'Python'
+  name: 'data'
+  top: 'im'
+	top: 'poke'
+  python_param {
+    module: 'python_poke_layer'
+    layer: 'PythonPokeLayer'
+    param_str: "--batch_size=128 --before=image_before --after=image_after --poke=pixel     --root_folder=/data0/pulkitag/data_sets/baxter_data/nov19/train --poke_tfm_type=gridCls --crop_size=227"
+  }
+}
