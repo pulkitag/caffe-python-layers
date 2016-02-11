@@ -11,6 +11,7 @@ import time
 import glog
 import pdb
 import pickle
+import copy
 
 def get_crop_coords(poke, H, W, crpSz, maxJitter=100):
 	'''
@@ -35,21 +36,35 @@ def get_crop_coords(poke, H, W, crpSz, maxJitter=100):
 def transform_poke(pk, **kwargs):
 	if kwargs['tfmType'] is None:
 		#Normalize pokes to range 0, 1
+		pk = copy.deepcopy(pk)
 		crpSz = kwargs['crpSz']
 		pk[0]  = (pk[0] - crpSz/2.0)/float(crpSz)
 		pk[1]  = (pk[1] - crpSz/2.0)/float(crpSz)
 		pk[2]  = pk[2] - np.pi/2
 		return pk
 	elif kwargs['tfmType'] == 'gridCls':
-		print pk
 		xBins, yBins, tBins = kwargs['xBins'], kwargs['yBins'], kwargs['tBins']
 		xBn = np.where(pk[0] >= xBins)[0][-1]
 		yBn = np.where(pk[1] >= yBins)[0][-1]
 		tBn = np.where(pk[2] >= tBins)[0][-1]
 		nX, nY = kwargs['nX'], kwargs['nY']
-		print (yBn, xBn)
+		#print ('PokeBin, %d, %d' % (xBn * xBins[1], yBn * yBins[1]))
 		bnIdx  = yBn * nY + xBn
-		return (bnIdx, tBn)				
+		yInfer = int(np.floor(bnIdx / float(len(xBins))))
+		xInfer = int(np.mod(bnIdx,len(xBins))) 
+		assert yInfer == yBn and xInfer==xBn
+		return (bnIdx, tBn)
+	elif kwargs['tfmType'] == 'gridCls_loc_debug':
+		kwargs = copy.deepcopy(kwargs)
+		crpSz = kwargs['crpSz']
+		kwargs['tfmType'] = None
+		pokePoint = transform_poke(pk, **kwargs)
+		pokePoint[0] = pokePoint[0] * crpSz + crpSz/2.0	
+		pokePoint[1] = pokePoint[1] * crpSz + crpSz/2.0	
+		#print ('PokePoint: %d, %d' % (pokePoint[0], pokePoint[1]))
+		kwargs['tfmType'] = 'gridCls'
+		pokeCls   = transform_poke(pk, **kwargs)
+		return list(pokePoint) + list(pokeCls)
 		
 
 #def image_reader_keys(dbNames, dbKeys, crpSz, isCrop, isGray=False):
@@ -81,7 +96,6 @@ def image_reader_keys(*args):
 			x1, y1, x2, y2, newPoke = get_crop_coords(poke.squeeze(), H, W, crpSz)
 			t47 = time.time()
 			cropFnTime += t47 - t45
-			#print (x1, y1, x2, y2)
 			ims[i, 0:3] = im1[:, y1:y2, x1:x2]
 			ims[i, 3:6] = im2[:, y1:y2, x1:x2]
 			t48 = time.time()
@@ -90,14 +104,14 @@ def image_reader_keys(*args):
 			ims[i, 0:3] = scm.imresize(im1, (crpSz, crpSz))
 			ims[i, 3:6] = scm.imresize(im2, (crpSz, crpSz))
 		tfmPoke = transform_poke(newPoke, **pkTfm)
-		print tfmPoke 
+		#print tfmPoke 
 		pokes[i][...] = np.array(tfmPoke).reshape((pkTfm['lblSz'],1,1))
 		t5 = time.time()
 		procTime += t5 - t4
 	#db.close()
 	print '#####################'
 	print 'Open-Time: %f, Pre-Time: %f, Read-Time: %f, Proc-Time: %f' % (openTime, preTime, readTime, procTime)
-	print 'CropFnTime: %f, Crop-Time: %f, Transpose Time: %f' % (cropFnTime, cropTime, tranTime)
+	#print 'CropFnTime: %f, Crop-Time: %f, Transpose Time: %f' % (cropFnTime, cropTime, tranTime)
 	print '#####################'
 	return ims, pokes
 
@@ -186,7 +200,7 @@ class PythonPokeLayer(caffe.Layer):
 			self.pkParams_['xBins'], self.pkParams_['yBins'] = None, None
 			self.pkParams_['tBins'] = None
 			self.lblSz_ = 3
-		elif self.param_.poke_tfm_type == 'gridCls':
+		elif self.param_.poke_tfm_type in ['gridCls', 'gridCls_loc_debug']:
 			#Grid classification
 			nXGrid, nYGrid = self.param_.poke_nxGrid, self.param_.poke_nyGrid
 			thGrid         = self.param_.poke_thGrid
@@ -197,7 +211,10 @@ class PythonPokeLayer(caffe.Layer):
 																	self.param_.poke_mxTheta, thGrid)
 			self.pkParams_['nX']      = nXGrid
 			self.pkParams_['nY']      = nYGrid
-			self.lblSz_ = 2
+			if self.param_.poke_tfm_type == 'gridCls':
+				self.lblSz_ = 2
+			else:
+				self.lblSz_ = 5
 		self.pkParams_['lblSz']  = self.lblSz_
 		self.pkParams_['crpSz']  = self.param_.crop_size
 		
@@ -336,11 +353,14 @@ def test_poke_layer_regression(isPlot=True):
 				if ip == 'q':
 					return	
 
-def test_poke_layer_cls(isPlot=True):
+def test_poke_layer_cls(isPlot=True, debugMode=True):
 	import vis_utils as vu
 	import matplotlib.pyplot as plt
 	fig     = plt.figure()
-	defFile = 'test/poke_cls_layer.prototxt'
+	if debugMode:
+		defFile = 'test/poke_cls_debug_layer.prototxt'
+	else:
+		defFile = 'test/poke_cls_layer.prototxt'
 	net     = caffe.Net(defFile, caffe.TEST)
 	while True:
 		data   = net.forward(blobs=['im', 'poke'])
@@ -348,19 +368,29 @@ def test_poke_layer_cls(isPlot=True):
 		shp    = im.shape
 		print (shp)
 		if isPlot:
-			for b in range(10):
-				pkBin = pk[b][0].squeeze()
+			for b in range(1):
+				pkb = pk[b].squeeze()
+				if debugMode:
+					x, y, pkBin = pkb[0], pkb[1], pkb[3]
+					#x, y = x * shp[3], y * shp[2]
+					#x, y = int(round(x + shp[3]/2.0)), int(round(y + shp[2]/2.0))
+				else:
+					pkBin = pk[b][0].squeeze()
 				by    = int(np.floor(pkBin / np.float(15)))
 				bx    = int(np.mod(pkBin, 15))
 				pkIm  = np.zeros((15, 15, 3)).astype(np.uint8)
+				print ('by, bx: %d, %d' % (int(by), int(bx)))
 				pkIm[by, bx,:] = np.array((255,0,0))
-				pkIm  = scm.imresize(pkIm, (shp[2], shp[3]))
+				imBy, imBx     = by * 16.214, bx * 16.214
+				pkIm  = scm.imresize(pkIm, (shp[2], shp[3]), interp='nearest')
 				pkIm  = pkIm.transpose((2,0,1)).reshape((1,3, shp[2], shp[3]))
 				imBefore = im[b, 0:3] / 2 + pkIm[0] / 2
 				ax    = vu.plot_n_ims([imBefore, im[b,3:6], pkIm[0]],\
 								 isBlobFormat=True, chSwap=(2,1,0), fig=fig)
-				#ax[0].plot(int(pk[b][0]), int(pk[b][1]), markersize=10, marker='o')
-				print pk[b]
+				if debugMode:
+					ax[2].plot(x, y, 'r', markersize=10, marker='o')
+					ax[2].plot(int(imBx), int(imBy), 'g', markersize=10, marker='o')
+				#print pk[b]
 				plt.draw()
 				plt.show()
 				ip = raw_input()
