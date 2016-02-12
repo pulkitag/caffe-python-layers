@@ -33,6 +33,14 @@ def get_crop_coords(poke, H, W, crpSz, maxJitter=100):
 #ims   = np.zeros((128, 6, 192, 192)).astype(np.float32)
 #pokes = np.zeros((128, 3, 1, 1)).astype(np.float32) 
 
+def find_bin(val, bins):
+	bnIdx = np.where(val >=bins)[0]
+	if len(bnIdx) == 0:
+		bnIdx = 0
+	else:
+		bnIdx = bnIdx[-1]
+	return bnIdx
+
 def transform_poke(pk, **kwargs):
 	if kwargs['tfmType'] is None:
 		#Normalize pokes to range 0, 1
@@ -54,9 +62,9 @@ def transform_poke(pk, **kwargs):
 		if len(tIdx) == 0:
 			print('SOMETHING IS WRONG in th: %f' %  pk[2])
 
-		xBn = np.where(pk[0] >= xBins)[0][-1]
-		yBn = np.where(pk[1] >= yBins)[0][-1]
-		tBn = np.where(pk[2] >= tBins)[0][-1]
+		xBn = find_bin(pk[0], xBins)
+		yBn = find_bin(pk[1], yBins)
+		tBn = find_bin(pk[2], tBins)
 		nX, nY = kwargs['nX'], kwargs['nY']
 		#print ('PokeBin, %d, %d' % (xBn * xBins[1], yBn * yBins[1]))
 		bnIdx  = yBn * nY + xBn
