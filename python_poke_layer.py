@@ -33,6 +33,14 @@ def get_crop_coords(poke, H, W, crpSz, maxJitter=100):
 #ims   = np.zeros((128, 6, 192, 192)).astype(np.float32)
 #pokes = np.zeros((128, 3, 1, 1)).astype(np.float32) 
 
+def find_bin(val, bins):
+	bnIdx = np.where(val >=bins)[0]
+	if len(bnIdx) == 0:
+		bnIdx = 0
+	else:
+		bnIdx = bnIdx[-1]
+	return bnIdx
+
 def transform_poke(pk, **kwargs):
 	if kwargs['tfmType'] is None:
 		#Normalize pokes to range 0, 1
@@ -44,9 +52,19 @@ def transform_poke(pk, **kwargs):
 		return pk
 	elif kwargs['tfmType'] == 'gridCls':
 		xBins, yBins, tBins = kwargs['xBins'], kwargs['yBins'], kwargs['tBins']
-		xBn = np.where(pk[0] >= xBins)[0][-1]
-		yBn = np.where(pk[1] >= yBins)[0][-1]
-		tBn = np.where(pk[2] >= tBins)[0][-1]
+		xIdx = np.where(pk[0] >= xBins)[0]
+		yIdx = np.where(pk[1] >= yBins)[0]
+		tIdx = np.where(pk[2] >= tBins)[0]
+		if len(xIdx) == 0:
+			print('SOMETHING IS WRONG in x: %f' %  pk[0])
+		if len(yIdx) == 0:
+			print('SOMETHING IS WRONG in y: %f' %  pk[1])
+		if len(tIdx) == 0:
+			print('SOMETHING IS WRONG in th: %f' %  pk[2])
+
+		xBn = find_bin(pk[0], xBins)
+		yBn = find_bin(pk[1], yBins)
+		tBn = find_bin(pk[2], tBins)
 		nX, nY = kwargs['nX'], kwargs['nY']
 		#print ('PokeBin, %d, %d' % (xBn * xBins[1], yBn * yBins[1]))
 		bnIdx  = yBn * nY + xBn
@@ -111,7 +129,7 @@ def image_reader_keys(*args):
 	#db.close()
 	print '#####################'
 	print 'Open-Time: %f, Pre-Time: %f, Read-Time: %f, Proc-Time: %f' % (openTime, preTime, readTime, procTime)
-	#print 'CropFnTime: %f, Crop-Time: %f, Transpose Time: %f' % (cropFnTime, cropTime, tranTime)
+	print 'CropFnTime: %f, Crop-Time: %f, Transpose Time: %f' % (cropFnTime, cropTime, tranTime)
 	print '#####################'
 	return ims, pokes
 
@@ -125,9 +143,9 @@ class PythonPokeLayer(caffe.Layer):
 		parser.add_argument('--after',  default='', type=str)
 		parser.add_argument('--poke',  default='', type=str)
 		parser.add_argument('--root_folder', default='', type=str)
-		parser.add_argument('--mean_file', default='', type=str)
+		parser.add_argument('--mean_file', default='None', type=str)
 		parser.add_argument('--mean_type', default='3val', type=str)
-		parser.add_argument('--poke_tfm_type', default='', type=str)
+		parser.add_argument('--poke_tfm_type', default='None', type=str)
 		parser.add_argument('--poke_nxGrid', default=15, type=str)
 		parser.add_argument('--poke_nyGrid', default=15, type=int)
 		parser.add_argument('--poke_thGrid', default=15, type=int)
@@ -153,7 +171,7 @@ class PythonPokeLayer(caffe.Layer):
 
 	def load_mean(self):
 		self.mu_ = None
-		if len(self.param_.mean_file) > 0:
+		if self.param_.mean_file is not None:
 			print ('READING MEAN FROM %s', self.param_.mean_file)
 			if self.param_.mean_file[-3:] == 'pkl':
 				meanDat  = pickle.load(open(self.param_.mean_file, 'r'))
@@ -179,6 +197,11 @@ class PythonPokeLayer(caffe.Layer):
 
 	def setup(self, bottom, top):
 		self.param_ = PythonPokeLayer.parse_args(self.param_str)
+		if self.param_.mean_file == 'None':
+			self.param_.mean_file = None
+		if self.param_.poke_tfm_type == 'None':
+			self.param_.poke_tfm_type = None
+
 		rf  = self.param_.root_folder
 		self.dbNames_ = [osp.join(rf, self.param_.before),
 									   osp.join(rf, self.param_.after),
