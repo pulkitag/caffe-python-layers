@@ -102,11 +102,79 @@ class L1LossWithIgnoreLayer(caffe.Layer):
 			bottom[0].diff[...] = 0
 		else:
 			bottom[0].diff[...] = self.param_.loss_weight * bottom[0].diff[...]/float(count)	
-
 		
 	def reshape(self, bottom, top):
 		top[0].reshape(1)
 		pass
+
+##
+#L1Log loss layer, which the ability to ignore the loss computation for some examples
+#This can be done - by making gt labels of dimension N + 1, whereas the vectors
+#between which the error is being computed are N-D. If the (N+1)th dimension is set
+#to 1, it means that the example should be included otherwise not. 
+#L1Log loss layer is more robust than L1Loss layer
+class L1LogLossWithIgnoreLayer(caffe.Layer):
+	'''
+		if err = abs(err) if abs(err) <= 1
+					 = 1 + log(abs(err)) if abs(err) > 1
+	'''
+	@classmethod
+	def parse_args(cls, argsStr):
+		parser = argparse.ArgumentParser(description='Python L1LogLoss With Ignore Layer')
+		parser.add_argument('--loss_weight', default=1.0, type=float)
+		args   = parser.parse_args(argsStr.split())
+		print('Using Config:')
+		pprint.pprint(args)
+		return args	
+		
+	def setup(self, bottom, top):
+		self.param_ = L1LogLossWithIgnoreLayer.parse_args(self.param_str)
+		assert len(bottom) == 2, 'There should be two bottom blobs'
+		assert len(top) == 1, 'There should be 1 top blobs'
+		assert (bottom[0].num == bottom[1].num)
+		assert (bottom[0].channels + 1 == bottom[1].channels)
+		assert (bottom[0].width == bottom[1].width)
+		assert (bottom[0].height== bottom[1].height)
+		#Get the batchSz
+		self.batchSz_ = bottom[0].num
+		#Form the top
+		assert len(top)==1, 'There should be only one output blob'
+		top[0].reshape(1)
+		
+	def forward(self, bottom, top):
+		loss, count = 0, 0
+		for b in range(self.batchSz_):
+			if bottom[1].data[b,-1,0,0] == 1.0:
+				err   = np.abs(bottom[0].data[b].squeeze() - bottom[1].data[b,0:-1].squeeze())
+				idx   = err > 1
+				err[idx] = np.log(err[idx]) + 1
+				loss     += np.sum(err)
+				count    += 1
+		if count == 0:
+			top[0].data[...] = 0.0
+		else:
+			top[0].data[...] = self.param_.loss_weight * loss /float(count)	
+	
+	def backward(self, top, propagate_down, bottom):
+		count = 0
+		for b in range(self.batchSz_):
+			if bottom[1].data[b,-1,0,0] == 1.0:
+				count += 1
+				diff   = bottom[0].data[b].squeeze() - bottom[1].data[b,0:-1].squeeze()
+				err    = np.abs(diff)
+				idx    = err > 1
+				diff[~idx] = np.sign(diff[~idx])
+				diff[idx]  = (1/err[idx]) * np.sign(diff[idx])
+				bottom[0].diff[b] = diff[...]
+		if count == 0:
+			bottom[0].diff[...] = 0
+		else:
+			bottom[0].diff[...] = self.param_.loss_weight * bottom[0].diff[...]/float(count)	
+
+	def reshape(self, bottom, top):
+		top[0].reshape(1)
+		pass
+
 
 ##
 #L1 loss layer which allows each dimension of |a - b| to weighted by a seperated weight
