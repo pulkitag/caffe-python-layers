@@ -18,6 +18,32 @@ except:
 
 IM_DATA = []
 
+def get_jitter(coords):
+	dx, dy = 0, 0
+	if self.param_.jitter_amt > 0:
+		rx, ry = np.random.random(), np.random.random()
+		dx, dy = rx * self.param_.jitter_amt, ry * self.param_.jitter_amt
+		if np.random.random() > 0.5:
+			dx = - dx
+		if np.random.random() > 0.5:
+			dy = -dy
+	
+	if self.param_.jitter_pct > 0:
+		h, w = [], []
+		for n in range(len(coords)):
+			x1, y1, x2, y2 = coords[n]
+			h.append(y2 - y1)
+			w.append(x2 - x1)
+		mnH, mnW = min(h), min(w)
+		rx, ry = np.random.random(), np.random.random()
+		dx, dy = rx * mnW * self.param_.jitter_pct, ry * mnH * self.param_.jitter_pct
+		if np.random.random() > 0.5:
+			dx = - dx
+		if np.random.random() > 0.5:
+			dy = -dy
+	return int(dx), int(dy)	
+
+
 def image_reader(args):
 	imName, imDims, cropSz, imNum, isGray, isMirror = args
 	x1, y1, x2, y2 = imDims
@@ -288,3 +314,175 @@ class PythonWindowDataRotsLayer(caffe.Layer):
 	def reshape(self, bottom, top):
 		""" This layer has no reshape """
 		pass
+
+
+
+##
+#Read data directly from groups
+class PythonGroupDataRotsLayer(caffe.Layer):
+	@classmethod
+	def parse_args(cls, argsStr):
+		parser = argparse.ArgumentParser(description='PythonGroupDataRots Layer')
+		parser.add_argument('--im_root_folder', default='', type=str)
+		parser.add_argument('--grp_root_folder', default='', type=str)
+		parser.add_argument('--grplist_file', default='', type=str)
+		parser.add_argument('--mean_file', default='', type=str)
+		parser.add_argument('--batch_size', default=128, type=int)
+		parser.add_argument('--crop_size', default=192, type=int)
+		parser.add_argument('--is_gray', dest='is_gray', action='store_true')
+		parser.add_argument('--no-is_gray', dest='is_gray', action='store_false')
+		parser.add_argument('--is_random_roll', dest='is_gray', action='store_true', default=True)
+		parser.add_argument('--no-is_random_roll', dest='is_gray', action='store_false')
+		parser.add_argument('--is_mirror',  dest='is_mirror', action='store_true', default=False)
+		parser.add_argument('--resume_iter', default=0, type=int)
+		parser.add_argument('--jitter_pct', default=0, type=float)
+		parser.add_argument('--jitter_amt', default=0, type=int)
+		parser.add_argument('--nrmlz_file', default='None', type=str)
+		parser.add_argument('--ncpu', default=2, type=int)
+		args   = parser.parse_args(argsStr.split())
+		print('Using Config:')
+		pprint.pprint(args)
+		return args	
+
+	def __del__(self):
+		self.wfid_.close()
+		for n in self.numIm_:
+			self.pool_[n].terminate()
+
+	def load_mean(self):
+		self.mu_ = None
+		if len(self.param_.mean_file) > 0:
+			#Mean is assumbed to be in BGR format
+			self.mu_ = mp.read_mean(self.param_.mean_file)
+			self.mu_ = self.mu_.astype(np.float32)
+			ch, h, w = self.mu_.shape
+			assert (h >= self.param_.crop_size and w >= self.param_.crop_size)
+			y1 = int(h/2 - (self.param_.crop_size/2))
+			x1 = int(w/2 - (self.param_.crop_size/2))
+			y2 = int(y1 + self.param_.crop_size)
+			x2 = int(x1 + self.param_.crop_size)
+			self.mu_ = self.mu_[:,y1:y2,x1:x2]
+
+	def setup(self, bottom, top):
+		#Initialize the parameters
+		self.param_  = PythonGroupDataRotsLayer.parse_args(self.param_str) 
+		if self.param_.is_gray:
+			self.ch_ = 1
+		else:
+			self.ch_ = 3
+		assert not self.param_.nrmlz_file == 'None'
+		self.rotPrms_ = {}
+		self.rotPrms_['randomRoll']   = self.param_.randomRoll
+		self.rotPrms_['randomRollMx'] = self.param_.randomRollMx
+		if self.param_.nrmlz_file:
+			nrmlzDat = pickle.load(open(self.param_.nrmlz_file, 'r'))
+			self.rotPrms_['nrmlzMu'] = nrmlzDat['nrmlzMu']
+			self.rotPrms_['nrmlzSd'] = nrmlzDat['nrmlzSd'] 
+			
+		#Read the groups
+		grpNameDat = pickle.load(open(self.prms_.grplist_file, 'r'))	
+		grpFiles   = grpNameDat['grpFiles']
+		self.grpDat_   = []
+		self.grpCount_ = [] 
+		for i,g in enumerate(grpFiles):
+			self.grpDat_.append(pickle.load(osp.join(self.param_.grp_root_folder, g)))
+			self.grpCount_.append(len(self.grpDat_[i]))
+		self.grpSampleProb_ = [float(i)/float(len(self.grpCount_)) for i in self.grpCount_]	
+	
+		#Define the parameters required to read data
+		self.fetchPrms_ = {}
+		self.fetchPrms_['is_mirror'] = self.param_.is_mirror
+		self.fetchPrms_['is_gray']   = self.param_.is_gray
+		self.fetchPrms_['crop_size'] = self.param_.crop_size
+		
+		top[0].reshape(self.param_.batch_size, self.numIm_ * self.ch_,
+										self.param_.crop_size, self.param_.crop_size)
+		top[1].reshape(self.param_.batch_size, self.lblSz_, 1, 1)
+		#Load the mean
+		self.load_mean()
+	
+		#Create pool
+		self.pool_, self.jobs_ = [], []
+		for n in range(self.numIm_):
+			self.pool_.append(Pool(processes=self.param_.ncpu))
+			self.jobs_.append([])
+		
+		#placeholders for data
+		self.imData_ = np.zeros((self.param_.batch_size, self.numIm_ * self.ch_,
+						self.param_.crop_size, self.param_.crop_size), np.float32)
+		self.labels_ = np.zeros((self.param_.batch_size, self.lblSz_,1,1),np.float32)
+
+		#Which functions to use for reading images
+		if 'cv2' in globals():
+			print('OPEN CV FOUND')
+			self.readfn_ = image_reader
+		else:
+			print('OPEN CV NOT FOUND, USING SCM')
+			self.readfn_ = image_reader_scm
+
+		#Launch the prefetching	
+		self.launch_jobs()
+		self.t_ = time.time()	
+
+	#Launch jobs	
+	def launch_jobs(self):
+		argList = []
+		#Form the list of groups that should be used
+		for b in range(self.param_.batch_size):
+			rand   =  np.random.multinomial(1, self.grpSampleProb_)
+			grpIdx =  np.where(rand==1)[0][0]
+			ng     =  np.random.randint(low=0, high=self.grpCount_)
+			argList.append([self.grpData_[grpIdx][ng], self.fetchPrms_])
+		#Launch the jobs
+		try:
+			self.jobs_ = self.pool_.map_async(self.readfn_, argList)
+		except KeyboardInterrupt:
+			print 'Keyboard Interrupt received - terminating in launch jobs'
+			self.pool_.terminate()	
+
+
+	def normalize_labels(self):
+		pass
+
+	def get_prefetch_data(self):
+		t1 = time.time()
+		try:
+			imRes      = self.jobs_.get()
+		except:
+			self.pool_.terminate()
+			raise Exception('Error/Interrupt Encountered')	
+		t2= time.time()
+		tFetch = t2 - t1
+		if self.mu_ is not None:	
+			self.imData_[...] = imRes[0] - self.mu_
+		else:
+			self.imData_[...] = imRes[0]
+		self.labels_[...]   = imRes[1]
+		self.normalize_labels()	
+		#print ('%d, Fetching: %f, Copying: %f' % (n, tFetch, time.time()-t2))
+		#glog.info('%d, Fetching: %f, Copying: %f' % (n, tFetch, time.time()-t2))
+
+	
+	def forward(self, bottom, top):
+		t1 = time.time()
+		tDiff = t1 - self.t_
+		#Load the images
+		self.get_prefetch_data()
+		top[0].data[...] = self.imData_
+		t2 = time.time()
+		tFetch = t2-t1
+		#Read the labels
+		top[1].data[...] = self.labels_
+		self.launch_jobs()
+		t2 = time.time()
+		#print ('Forward took %fs in PythonWindowDataParallelLayer' % (t2-t1))
+		glog.info('Prev: %f, fetch: %f forward: %f' % (tDiff,tFetch, t2-t1))
+		self.t_ = time.time()
+
+	def backward(self, top, propagate_down, bottom):
+		""" This layer has no backward """
+		pass
+	
+	def reshape(self, bottom, top):
+		""" This layer has no reshape """
+		p
