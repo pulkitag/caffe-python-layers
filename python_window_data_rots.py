@@ -7,10 +7,11 @@ from os import path as osp
 import my_pycaffe_io as mpio
 import my_pycaffe as mp
 from easydict import EasyDict as edict
-from transforms3d.transforms3d import euler t3eu
+from transforms3d.transforms3d import euler  as t3eu
 import time
 import glog
 import pdb
+import pickle
 try:
 	import cv2
 except:
@@ -157,7 +158,7 @@ class PythonWindowDataRotsLayer(caffe.Layer):
 			self.ch_ = 1
 		else:
 			self.ch_ = 3
-		assert not self.param_.nrmlz_file == 'None'
+		#assert not self.param_.nrmlz_file == 'None'
 		self.rotPrms_ = {}
 		self.rotPrms_['randomRoll']   = self.param_.randomRoll
 		self.rotPrms_['randomRollMx'] = self.param_.randomRollMx
@@ -316,6 +317,38 @@ class PythonWindowDataRotsLayer(caffe.Layer):
 		pass
 
 
+def read_double_images(imStr, p1, p2, imPrms):
+	cropSz = imPrms['cropSz']
+	im     = []
+	im.append(cv2.imread(imStr % p1))
+	im.append(cv2.imread(imStr % p2))
+	ims    = np.concatenate(im, axis=0)
+	ims    = cv2.resize(ims,(cropSz, cropSz))
+	ims    = ims.transpose((2,0,1))
+	return ims
+
+def get_rots(gp, imPrms, lbPrms):
+	'''
+		gp    : group
+		lbPrms: parameter for computing the labels 
+	'''
+	lPerm  = np.random.permutation(gp.num)
+	n1, n2 = lPerm[0], lPerm[1]
+	rotLb  = get_rots_label(lbInfo, gp.data[n1].rots,
+											gp.data[n2].rots,
+							gp.data[n1].pts.camera, gp.data[n2].pts.camera)
+	im     = read_double_images(gp.imStr, gp.prefix[n1], gp.prefix[n2], imPrms)
+	return im, lb			
+
+
+def read_groups(args):
+	grp, fetchPrms, lbPrms = args
+	if lbPrms['type'] == 'euler':
+		im, lb = get_rots(grp, fetchPrms, lbPrms)		
+	else:
+		raise Exception('Label type %s not recognized' % lbPrms['type'])	
+	return (im, lb)
+	
 
 ##
 #Read data directly from groups
@@ -324,15 +357,21 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 	def parse_args(cls, argsStr):
 		parser = argparse.ArgumentParser(description='PythonGroupDataRots Layer')
 		parser.add_argument('--im_root_folder', default='', type=str)
-		parser.add_argument('--grp_root_folder', default='', type=str)
+		#The file which contains the name of groups
 		parser.add_argument('--grplist_file', default='', type=str)
+		#File containing information what kind of labels
+    #should be extractee etc.
+		parser.add_argument('--lbinfo_file', default='', type=str)
 		parser.add_argument('--mean_file', default='', type=str)
 		parser.add_argument('--batch_size', default=128, type=int)
 		parser.add_argument('--crop_size', default=192, type=int)
+		parser.add_argument('--im_size', default=101, type=int)
 		parser.add_argument('--is_gray', dest='is_gray', action='store_true')
 		parser.add_argument('--no-is_gray', dest='is_gray', action='store_false')
-		parser.add_argument('--is_random_roll', dest='is_gray', action='store_true', default=True)
-		parser.add_argument('--no-is_random_roll', dest='is_gray', action='store_false')
+		parser.add_argument('--is_random_roll', dest='is_random_roll', 
+                        action='store_true', default=True)
+		parser.add_argument('--no-is_random_roll', dest='is_random_roll', action='store_false')
+		parser.add_argument('--random_roll_max', default=0, type=float)
 		parser.add_argument('--is_mirror',  dest='is_mirror', action='store_true', default=False)
 		parser.add_argument('--resume_iter', default=0, type=int)
 		parser.add_argument('--jitter_pct', default=0, type=float)
@@ -370,17 +409,17 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 			self.ch_ = 1
 		else:
 			self.ch_ = 3
-		assert not self.param_.nrmlz_file == 'None'
+		#assert not self.param_.nrmlz_file == 'None'
 		self.rotPrms_ = {}
-		self.rotPrms_['randomRoll']   = self.param_.randomRoll
-		self.rotPrms_['randomRollMx'] = self.param_.randomRollMx
-		if self.param_.nrmlz_file:
+		self.rotPrms_['randomRoll']   = self.param_.is_random_roll
+		self.rotPrms_['randomRollMx'] = self.param_.random_roll_max
+		if self.param_.nrmlz_file is not 'None':
 			nrmlzDat = pickle.load(open(self.param_.nrmlz_file, 'r'))
 			self.rotPrms_['nrmlzMu'] = nrmlzDat['nrmlzMu']
 			self.rotPrms_['nrmlzSd'] = nrmlzDat['nrmlzSd'] 
 			
 		#Read the groups
-		grpNameDat = pickle.load(open(self.prms_.grplist_file, 'r'))	
+		grpNameDat = pickle.load(open(self.param_.grplist_file, 'r'))	
 		grpFiles   = grpNameDat['grpFiles']
 		self.grpDat_   = []
 		self.grpCount_ = [] 
@@ -391,10 +430,14 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 	
 		#Define the parameters required to read data
 		self.fetchPrms_ = {}
-		self.fetchPrms_['is_mirror'] = self.param_.is_mirror
-		self.fetchPrms_['is_gray']   = self.param_.is_gray
-		self.fetchPrms_['crop_size'] = self.param_.crop_size
-		
+		self.fetchPrms_['isMirror'] = self.param_.is_mirror
+		self.fetchPrms_['isGray']   = self.param_.is_gray
+		self.fetchPrms_['cropSize'] = self.param_.crop_size
+	
+		#Parameters that define how labels should be computed
+		lbDat = pickle.load(open(self.param_lbinfo_file))
+		self.lbPrms_ = lbDat['lbInfo']
+			
 		top[0].reshape(self.param_.batch_size, self.numIm_ * self.ch_,
 										self.param_.crop_size, self.param_.crop_size)
 		top[1].reshape(self.param_.batch_size, self.lblSz_, 1, 1)
@@ -432,7 +475,7 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 			rand   =  np.random.multinomial(1, self.grpSampleProb_)
 			grpIdx =  np.where(rand==1)[0][0]
 			ng     =  np.random.randint(low=0, high=self.grpCount_)
-			argList.append([self.grpData_[grpIdx][ng], self.fetchPrms_])
+			argList.append([self.grpData_[grpIdx][ng], self.fetchPrms_, self.lbPrms_])
 		#Launch the jobs
 		try:
 			self.jobs_ = self.pool_.map_async(self.readfn_, argList)
@@ -485,4 +528,4 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 	
 	def reshape(self, bottom, top):
 		""" This layer has no reshape """
-		p
+		pass

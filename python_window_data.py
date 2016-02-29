@@ -184,7 +184,6 @@ class WindowLoader(object):
 		return jobid, imData
 
 
-
 def _load_images(args):
 	self, imNames, jobId = args
 	return self.load_images(imNames, jobId) 
