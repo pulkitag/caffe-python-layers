@@ -369,7 +369,7 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 		parser.add_argument('--is_gray', dest='is_gray', action='store_true')
 		parser.add_argument('--no-is_gray', dest='is_gray', action='store_false')
 		parser.add_argument('--is_random_roll', dest='is_random_roll', 
-                        action='store_true', default=True)
+                        action='store_true', default=False)
 		parser.add_argument('--no-is_random_roll', dest='is_random_roll', action='store_false')
 		parser.add_argument('--random_roll_max', default=0, type=float)
 		parser.add_argument('--is_mirror',  dest='is_mirror', action='store_true', default=False)
@@ -384,13 +384,11 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 		return args	
 
 	def __del__(self):
-		self.wfid_.close()
-		for n in self.numIm_:
-			self.pool_[n].terminate()
+		self.pool_.terminate()
 
 	def load_mean(self):
 		self.mu_ = None
-		if len(self.param_.mean_file) > 0:
+		if not self.param_.mean_file == 'None':
 			#Mean is assumbed to be in BGR format
 			self.mu_ = mp.read_mean(self.param_.mean_file)
 			self.mu_ = self.mu_.astype(np.float32)
@@ -419,15 +417,22 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 			self.rotPrms_['nrmlzSd'] = nrmlzDat['nrmlzSd'] 
 			
 		#Read the groups
+		print ('Loading Group Data')
 		grpNameDat = pickle.load(open(self.param_.grplist_file, 'r'))	
 		grpFiles   = [grpNameDat['grpFiles'][0]]
 		self.grpDat_   = []
-		self.grpCount_ = [] 
+		self.grpCount_ = []
+		numGrp         = 0 
 		for i,g in enumerate(grpFiles):
-			self.grpDat_.append(pickle.load(open(g, 'r')))
+			self.grpDat_.append(pickle.load(open(g, 'r'))['groups'])
 			self.grpCount_.append(len(self.grpDat_[i]))
-		self.grpSampleProb_ = [float(i)/float(len(self.grpCount_)) for i in self.grpCount_]	
-	
+			print ('Groups in %s: %d' % (g, self.grpCount_[i]))
+			numGrp += self.grpCount_[i]
+		print ('Total number of groups: %d' % numGrp)
+		self.grpSampleProb_ = [float(i)/float(numGrp) for i in self.grpCount_]	
+		print (self.grpSampleProb_)
+		print (np.sum(np.array(self.grpSampleProb_)))	
+
 		#Define the parameters required to read data
 		self.fetchPrms_ = {}
 		self.fetchPrms_['isMirror'] = self.param_.is_mirror
@@ -435,33 +440,32 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 		self.fetchPrms_['cropSize'] = self.param_.crop_size
 	
 		#Parameters that define how labels should be computed
-		lbDat = pickle.load(open(self.param_lbinfo_file))
+		lbDat = pickle.load(open(self.param_.lbinfo_file))
 		self.lbPrms_ = lbDat['lbInfo']
-			
-		top[0].reshape(self.param_.batch_size, self.numIm_ * self.ch_,
+		self.lblSz_  = self.lbPrms_['lbSz']	
+		
+		top[0].reshape(self.param_.batch_size, 2 * self.ch_,
 										self.param_.crop_size, self.param_.crop_size)
 		top[1].reshape(self.param_.batch_size, self.lblSz_, 1, 1)
 		#Load the mean
 		self.load_mean()
 	
 		#Create pool
-		self.pool_, self.jobs_ = [], []
-		for n in range(self.numIm_):
-			self.pool_.append(Pool(processes=self.param_.ncpu))
-			self.jobs_.append([])
+		self.pool_ = Pool(processes=self.param_.ncpu)
+		self.jobs_ = None
 		
 		#placeholders for data
-		self.imData_ = np.zeros((self.param_.batch_size, self.numIm_ * self.ch_,
+		self.imData_ = np.zeros((self.param_.batch_size, 2 * self.ch_,
 						self.param_.crop_size, self.param_.crop_size), np.float32)
 		self.labels_ = np.zeros((self.param_.batch_size, self.lblSz_,1,1),np.float32)
 
 		#Which functions to use for reading images
 		if 'cv2' in globals():
 			print('OPEN CV FOUND')
-			self.readfn_ = image_reader
+			self.readfn_ = read_groups
 		else:
 			print('OPEN CV NOT FOUND, USING SCM')
-			self.readfn_ = image_reader_scm
+			self.readfn_ = read_groups
 
 		#Launch the prefetching	
 		self.launch_jobs()
@@ -474,8 +478,8 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 		for b in range(self.param_.batch_size):
 			rand   =  np.random.multinomial(1, self.grpSampleProb_)
 			grpIdx =  np.where(rand==1)[0][0]
-			ng     =  np.random.randint(low=0, high=self.grpCount_)
-			argList.append([self.grpData_[grpIdx][ng], self.fetchPrms_, self.lbPrms_])
+			ng     =  np.random.randint(low=0, high=self.grpCount_[grpIdx])
+			argList.append([self.grpDat_[grpIdx][ng], self.fetchPrms_, self.lbPrms_])
 		#Launch the jobs
 		try:
 			self.jobs_ = self.pool_.map_async(self.readfn_, argList)
