@@ -420,11 +420,11 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 			
 		#Read the groups
 		grpNameDat = pickle.load(open(self.param_.grplist_file, 'r'))	
-		grpFiles   = grpNameDat['grpFiles']
+		grpFiles   = [grpNameDat['grpFiles'][0]]
 		self.grpDat_   = []
 		self.grpCount_ = [] 
 		for i,g in enumerate(grpFiles):
-			self.grpDat_.append(pickle.load(osp.join(self.param_.grp_root_folder, g)))
+			self.grpDat_.append(pickle.load(open(g, 'r')))
 			self.grpCount_.append(len(self.grpDat_[i]))
 		self.grpSampleProb_ = [float(i)/float(len(self.grpCount_)) for i in self.grpCount_]	
 	
