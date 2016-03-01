@@ -8,6 +8,7 @@ import my_pycaffe_io as mpio
 import my_pycaffe as mp
 from easydict import EasyDict as edict
 from transforms3d.transforms3d import euler  as t3eu
+import street_label_utils as slu
 import time
 import glog
 import pdb
@@ -334,7 +335,7 @@ def get_rots(gp, imPrms, lbPrms):
 	'''
 	lPerm  = np.random.permutation(gp.num)
 	n1, n2 = lPerm[0], lPerm[1]
-	rotLb  = get_rots_label(lbInfo, gp.data[n1].rots,
+	rotLb  = slu.get_pose_delta(lbInfo, gp.data[n1].rots,
 											gp.data[n2].rots,
 							gp.data[n1].pts.camera, gp.data[n2].pts.camera)
 	im     = read_double_images(gp.imStr, gp.prefix[n1], gp.prefix[n2], imPrms)
