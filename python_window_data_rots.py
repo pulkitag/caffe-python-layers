@@ -446,7 +446,7 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 		
 		top[0].reshape(self.param_.batch_size, 2 * self.ch_,
 										self.param_.crop_size, self.param_.crop_size)
-		top[1].reshape(self.param_.batch_size, self.lblSz_, 1, 1)
+		top[1].reshape(self.param_.batch_size, self.lblSz_ + 1, 1, 1)
 		#Load the mean
 		self.load_mean()
 	
@@ -457,7 +457,7 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 		#placeholders for data
 		self.imData_ = np.zeros((self.param_.batch_size, 2 * self.ch_,
 						self.param_.crop_size, self.param_.crop_size), np.float32)
-		self.labels_ = np.zeros((self.param_.batch_size, self.lblSz_,1,1),np.float32)
+		self.labels_ = np.zeros((self.param_.batch_size, self.lblSz_ + 1,1,1),np.float32)
 
 		#Which functions to use for reading images
 		if 'cv2' in globals():

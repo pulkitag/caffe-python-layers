@@ -132,7 +132,8 @@ class L1LogLossWithIgnoreLayer(caffe.Layer):
 		assert len(bottom) == 2, 'There should be two bottom blobs'
 		assert len(top) == 1, 'There should be 1 top blobs'
 		assert (bottom[0].num == bottom[1].num)
-		assert (bottom[0].channels + 1 == bottom[1].channels)
+		assert bottom[0].channels + 1 == bottom[1].channels,\
+           '%d, %d' % (bottom[0].channels + 1, bottom[1].channels)
 		assert (bottom[0].width == bottom[1].width)
 		assert (bottom[0].height== bottom[1].height)
 		#Get the batchSz
