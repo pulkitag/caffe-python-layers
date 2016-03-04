@@ -18,6 +18,8 @@ try:
 except:
 	print('OPEN CV not found, resorting to scipy.misc')
 
+MODULE_PATH = osp.dirname(osp.realpath(__file__))
+
 IM_DATA = []
 
 def get_jitter(coords):
@@ -318,13 +320,13 @@ class PythonWindowDataRotsLayer(caffe.Layer):
 		pass
 
 
-def read_double_images(imStr, p1, p2, imPrms):
-	cropSz = imPrms['cropSz']
+def read_double_images(imName1, imName2, imPrms):
+	imSz, cropSz = imPrms['imSz'], imPrms['cropSz']
 	im     = []
-	im.append(cv2.imread(imStr % p1))
-	im.append(cv2.imread(imStr % p2))
-	ims    = np.concatenate(im, axis=0)
-	ims    = cv2.resize(ims,(cropSz, cropSz))
+	im.append(cv2.imread(imName1))
+	im.append(cv2.imread(imName2))
+	ims    = np.concatenate(im, axis=2)
+	ims    = cv2.resize(ims,(imSz, imSz))
 	ims    = ims.transpose((2,0,1))
 	return ims
 
@@ -334,20 +336,26 @@ def get_rots(gp, imPrms, lbPrms):
 		lbPrms: parameter for computing the labels 
 	'''
 	lPerm  = np.random.permutation(gp.num)
+	if len(lPerm) < 2:
+		return (None, None)
 	n1, n2 = lPerm[0], lPerm[1]
-	rotLb  = slu.get_pose_delta(lbInfo, gp.data[n1].rots,
+	lb     = slu.get_pose_delta(lbPrms, gp.data[n1].rots,
 											gp.data[n2].rots,
 							gp.data[n1].pts.camera, gp.data[n2].pts.camera)
-	im     = read_double_images(gp.imStr, gp.prefix[n1], gp.prefix[n2], imPrms)
+	lb     = np.array(lb)
+	imFolder = imPrms['imRootFolder'] % gp.folderId
+	imName1  = osp.join(imFolder, gp.crpImNames[n1])
+	imName2  = osp.join(imFolder, gp.crpImNames[n2])
+	im     = read_double_images(imName1, imName2, imPrms)
 	return im, lb			
 
 
 def read_groups(args):
 	grp, fetchPrms, lbPrms = args
-	if lbPrms['type'] == 'euler':
+	if lbPrms['type'] == 'pose':
 		im, lb = get_rots(grp, fetchPrms, lbPrms)		
 	else:
-		raise Exception('Label type %s not recognized' % lbPrms['type'])	
+		raise Exception('Label type %s not recognized' % lbPrms['type'])
 	return (im, lb)
 	
 
@@ -386,10 +394,13 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 
 	def __del__(self):
 		self.pool_.terminate()
+		del self.jobs_
 
 	def load_mean(self):
 		self.mu_ = None
-		if not self.param_.mean_file == 'None':
+		if self.param_.mean_file == 'None':
+			self.mu_ = 128 * np.ones((6, self.param_.im_size, self.param_.im_size), np.float32)
+		else:
 			#Mean is assumbed to be in BGR format
 			self.mu_ = mp.read_mean(self.param_.mean_file)
 			self.mu_ = self.mu_.astype(np.float32)
@@ -420,7 +431,7 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 		#Read the groups
 		print ('Loading Group Data')
 		grpNameDat = pickle.load(open(self.param_.grplist_file, 'r'))	
-		grpFiles   = [grpNameDat['grpFiles'][0]]
+		grpFiles   = grpNameDat['grpFiles']
 		self.grpDat_   = []
 		self.grpCount_ = []
 		numGrp         = 0 
@@ -438,7 +449,9 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 		self.fetchPrms_ = {}
 		self.fetchPrms_['isMirror'] = self.param_.is_mirror
 		self.fetchPrms_['isGray']   = self.param_.is_gray
-		self.fetchPrms_['cropSize'] = self.param_.crop_size
+		self.fetchPrms_['cropSz'] = self.param_.crop_size
+		self.fetchPrms_['imSz']   = self.param_.im_size
+		self.fetchPrms_['imRootFolder'] = self.param_.im_root_folder
 	
 		#Parameters that define how labels should be computed
 		lbDat = pickle.load(open(self.param_.lbinfo_file))
@@ -446,19 +459,20 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 		self.lblSz_  = self.lbPrms_['lbSz']	
 		
 		top[0].reshape(self.param_.batch_size, 2 * self.ch_,
-										self.param_.crop_size, self.param_.crop_size)
+										self.param_.im_size, self.param_.im_size)
 		top[1].reshape(self.param_.batch_size, self.lblSz_ + 1, 1, 1)
 		#Load the mean
 		self.load_mean()
 	
 		#Create pool
-		self.pool_ = Pool(processes=self.param_.ncpu)
-		self.jobs_ = None
+		if self.param_.ncpu > 0:
+			self.pool_ = Pool(processes=self.param_.ncpu)
+			self.jobs_ = None
 		
 		#placeholders for data
 		self.imData_ = np.zeros((self.param_.batch_size, 2 * self.ch_,
-						self.param_.crop_size, self.param_.crop_size), np.float32)
-		self.labels_ = np.zeros((self.param_.batch_size, self.lblSz_ + 1,1,1),np.float32)
+						self.param_.im_size, self.param_.im_size), np.float32)
+		self.labels_ = np.ones((self.param_.batch_size, self.lblSz_ + 1,1,1),np.float32)
 
 		#Which functions to use for reading images
 		if 'cv2' in globals():
@@ -474,38 +488,54 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 
 	#Launch jobs	
 	def launch_jobs(self):
-		argList = []
+		self.argList = []
 		#Form the list of groups that should be used
 		for b in range(self.param_.batch_size):
 			rand   =  np.random.multinomial(1, self.grpSampleProb_)
 			grpIdx =  np.where(rand==1)[0][0]
 			ng     =  np.random.randint(low=0, high=self.grpCount_[grpIdx])
-			argList.append([self.grpDat_[grpIdx][ng], self.fetchPrms_, self.lbPrms_])
-		#Launch the jobs
-		try:
-			self.jobs_ = self.pool_.map_async(self.readfn_, argList)
-		except KeyboardInterrupt:
-			print 'Keyboard Interrupt received - terminating in launch jobs'
-			self.pool_.terminate()	
-
+			self.argList.append([self.grpDat_[grpIdx][ng], self.fetchPrms_, self.lbPrms_])
+		if self.param_.ncpu > 0:
+			#Launch the jobs
+			try:
+				self.jobs_ = self.pool_.map_async(self.readfn_, self.argList)
+			except KeyboardInterrupt:
+				self.pool_.terminate()
+				print 'Keyboard Interrupt received - terminating in launch jobs'
+				raise Exception('Error/Interrupt Encountered')
 
 	def normalize_labels(self):
 		pass
 
 	def get_prefetch_data(self):
 		t1 = time.time()
-		try:
-			imRes      = self.jobs_.get()
-		except:
-			self.pool_.terminate()
-			raise Exception('Error/Interrupt Encountered')	
+		if self.param_.ncpu > 0:
+			try:
+				imRes      = self.jobs_.get(20)
+			except:
+				self.pool_.terminate()
+				raise Exception('Error/Interrupt Encountered')
+		else:
+			#print (self.argList[0])
+			imRes = [self.readfn_(self.argList[0])]
+			#pdb.set_trace()
 		t2= time.time()
 		tFetch = t2 - t1
-		if self.mu_ is not None:	
-			self.imData_[...] = imRes[0] - self.mu_
-		else:
-			self.imData_[...] = imRes[0]
-		self.labels_[...]   = imRes[1]
+		bCount = 0
+		for b in range(self.param_.batch_size):
+			if imRes[b][1] is not None:
+				if self.mu_ is not None:	
+					self.imData_[b,:,:,:] = imRes[b][0] - self.mu_
+				else:
+					self.imData_[b,:,:,:] = imRes[b][0]
+				print (imRes[b][1].shape)
+				self.labels_[b,0:self.lblSz_,:,:] = imRes[b][1].reshape(1,self.lblSz_,1,1).astype(np.float32)
+				bCount += 1
+			else:
+				#Donot use the label, image pair
+				self.imData_[b,:,:,:] = 0.
+				self.labels_[b,:,:,:] = 0.
+		print ('Number of valid images in batch: %d' % bCount)
 		self.normalize_labels()	
 		#print ('%d, Fetching: %f, Copying: %f' % (n, tFetch, time.time()-t2))
 		#glog.info('%d, Fetching: %f, Copying: %f' % (n, tFetch, time.time()-t2))
@@ -534,3 +564,29 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 	def reshape(self, bottom, top):
 		""" This layer has no reshape """
 		pass
+
+def test_group_rots(isPlot=True):
+	import vis_utils as vu
+	import matplotlib.pyplot as plt
+	fig     = plt.figure()
+	defFile = osp.join(MODULE_PATH, 'test/test_group_rots.prototxt')
+	net     = caffe.Net(defFile, caffe.TEST)
+	while True:
+		data   = net.forward(blobs=['pair_data', 'pose_label'])
+		im, pk = data['pair_data'], data['pose_label']
+		im     += 128
+		im     = im.astype(np.uint8)
+		if isPlot:
+			for b in range(10):
+				rots = tuple(pk[b].squeeze())[0:3]
+				rots = [(r * 180.)/np.pi for r in rots]
+				figTitle = 'yaw: %f,  pitch: %f, roll: %f' % (rots[0], rots[1], rots[2])
+				ax = vu.plot_pairs(im[b,0:3], im[b,3:6], isBlobFormat=True,
+             chSwap=(2,1,0), fig=fig, figTitle=figTitle)
+				plt.draw()
+				plt.show()
+				ip = raw_input()
+				if ip == 'q':
+					return	
+
+
