@@ -323,6 +323,7 @@ class PythonWindowDataRotsLayer(caffe.Layer):
 def read_double_images(imName1, imName2, imPrms):
 	imSz, cropSz = imPrms['imSz'], imPrms['cropSz']
 	im     = []
+	print (imName1, imName2)
 	im.append(cv2.imread(imName1))
 	im.append(cv2.imread(imName2))
 	ims    = np.concatenate(im, axis=2)
@@ -517,7 +518,9 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 				raise Exception('Error/Interrupt Encountered')
 		else:
 			#print (self.argList[0])
-			imRes = [self.readfn_(self.argList[0])]
+			imRes = []
+			for b in range(self.param_.batch_size):
+				imRes.append(self.readfn_(self.argList[b]))
 			#pdb.set_trace()
 		t2= time.time()
 		tFetch = t2 - t1
@@ -528,7 +531,7 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 					self.imData_[b,:,:,:] = imRes[b][0] - self.mu_
 				else:
 					self.imData_[b,:,:,:] = imRes[b][0]
-				print (imRes[b][1].shape)
+				#print (imRes[b][1].shape)
 				self.labels_[b,0:self.lblSz_,:,:] = imRes[b][1].reshape(1,self.lblSz_,1,1).astype(np.float32)
 				bCount += 1
 			else:
