@@ -69,19 +69,18 @@ def read_double_images(imName1, imName2, imPrms):
 	ims    = ims.transpose((2,0,1))
 	return ims
 
-def get_rots(gp, imPrms, lbPrms):
+def get_rots(gp, imPrms, lbPrms, idx):
 	'''
 		gp    : group
-		lbPrms: parameter for computing the labels 
+		lbPrms: parameter for computing the labels
+		idx   : tuple (n1,n2) indicating which grp elements
+            to extract 
 	'''
-	lPerm  = np.random.permutation(gp.num)
-	if len(lPerm) < 2:
-		return (None, None)
-	n1, n2 = lPerm[0], lPerm[1]
+	n1, n2 = idx
 	lb     = slu.get_pose_delta(lbPrms, gp.data[n1].rots,
-											gp.data[n2].rots,
-							gp.data[n1].pts.camera, gp.data[n2].pts.camera,
-              debugMode=True, rotOrder='sxyz')
+										gp.data[n2].rots,
+						gp.data[n1].pts.camera, gp.data[n2].pts.camera,
+						debugMode=lbPrms['debugMode'])
 	lb     = np.array(lb)
 	imFolder = imPrms['imRootFolder'] % gp.folderId
 	imName1  = osp.join(imFolder, gp.crpImNames[n1])
@@ -89,11 +88,45 @@ def get_rots(gp, imPrms, lbPrms):
 	im     = read_double_images(imName1, imName2, imPrms)
 	return im, lb			
 
+#Sample which image pair to chose from the group
+def sample_within_group(gp, lbPrms):
+	if gp.num == 1:
+		print ('WARNING: Only 1 element in the group')
+	l1 = np.random.permutation(gp.num)
+	l2 = np.random.permutation(gp.num)
+	done = True
+	for n1 in l1:
+		for n2 in l2:
+			#Sample the same image rarely
+			if n1 == n2:
+				rnd = np.random.random()
+				if rnd < 0.85:
+					continue
+			lb  = slu.get_pose_delta(lbPrms, gp.data[n1].rots,
+						  gp.data[n2].rots,
+							gp.data[n1].pts.camera, gp.data[n2].pts.camera,
+              debugMode=lbPrms['debugMode'])
+			lb  = np.array(lb)
+			if lbPrms['maxRot'] is not None:
+				maxRot = np.max(lb[0:lbPrms['numRot']])	
+				if maxRot <= lbPrms['mxRot']:
+					done = True
+				else:
+					done = False
+			if done:
+				break
+		if done:
+			break
+	if done:
+		return n1, n2
+	else:
+		return None, None
+		
 
 def read_groups(args):
-	grp, fetchPrms, lbPrms = args
+	grp, fetchPrms, lbPrms, idx = args
 	if lbPrms['type'] == 'pose':
-		im, lb = get_rots(grp, fetchPrms, lbPrms)		
+		im, lb = get_rots(grp, fetchPrms, lbPrms, idx)		
 	else:
 		raise Exception('Label type %s not recognized' % lbPrms['type'])
 	return (im, lb)
@@ -202,6 +235,7 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 		#Parameters that define how labels should be computed
 		lbDat = pickle.load(open(self.param_.lbinfo_file))
 		self.lbPrms_ = lbDat['lbInfo']
+		self.lbPrms_['debugMode'] = self.debugMode_
 		self.lblSz_  = self.lbPrms_['lbSz']	
 		if self.debugMode_:
 			self.lblSz_ += 3	
@@ -239,10 +273,14 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 		self.argList = []
 		#Form the list of groups that should be used
 		for b in range(self.param_.batch_size):
-			rand   =  np.random.multinomial(1, self.grpSampleProb_)
-			grpIdx =  np.where(rand==1)[0][0]
-			ng     =  np.random.randint(low=0, high=self.grpCount_[grpIdx])
-			self.argList.append([self.grpDat_[grpIdx][ng], self.fetchPrms_, self.lbPrms_])
+			while True:
+				rand   =  np.random.multinomial(1, self.grpSampleProb_)
+				grpIdx =  np.where(rand==1)[0][0]
+				ng     =  np.random.randint(low=0, high=self.grpCount_[grpIdx])
+				n1, n2 =  sample_within_group(self.grpDat_[grpIdx][ng], self.lbPrms_)
+				if n1 is not None:
+					break
+			self.argList.append([self.grpDat_[grpIdx][ng], self.fetchPrms_, self.lbPrms_, (n1,n2)])
 		if self.param_.ncpu > 0:
 			#Launch the jobs
 			try:
