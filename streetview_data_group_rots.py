@@ -109,7 +109,7 @@ def sample_within_group(gp, lbPrms):
 			lb  = np.array(lb)
 			if lbPrms['maxRot'] is not None:
 				maxRot = np.max(lb[0:lbPrms['numRot']])	
-				if maxRot <= lbPrms['mxRot']:
+				if maxRot <= math.radians(lbPrms['maxRot']):
 					done = True
 				else:
 					done = False
