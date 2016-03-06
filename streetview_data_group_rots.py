@@ -13,6 +13,7 @@ import time
 import glog
 import pdb
 import pickle
+import math
 try:
 	import cv2
 except:
@@ -202,7 +203,7 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 			self.rotPrms_['nrmlzSd'] = nrmlzDat['nrmlzSd'] 
 		
 		#debug mode
-		self.debugMode_ = True
+		self.debugMode_ = False
 	
 		#Read the groups
 		print ('Loading Group Data')
@@ -211,7 +212,8 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 		self.grpDat_   = []
 		self.grpCount_ = []
 		numGrp         = 0 
-		for i,g in enumerate([grpFiles[0]]):
+		for i,g in enumerate(grpFiles):
+		#for i,g in enumerate([grpFiles[0]]):
 			self.grpDat_.append(pickle.load(open(g, 'r'))['groups'])
 			self.grpCount_.append(len(self.grpDat_[i]))
 			print ('Groups in %s: %d' % (g, self.grpCount_[i]))
@@ -316,7 +318,7 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 					self.imData_[b,:,:,:] = imRes[b][0] - self.mu_
 				else:
 					self.imData_[b,:,:,:] = imRes[b][0]
-				print (imRes[b][1].shape)
+				#print (imRes[b][1].shape)
 				self.labels_[b,0:self.lblSz_,:,:] = imRes[b][1].reshape(1,self.lblSz_,1,1).astype(np.float32)
 				bCount += 1
 			else:
