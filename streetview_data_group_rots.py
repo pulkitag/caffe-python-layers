@@ -54,8 +54,23 @@ def read_double_images(imName1, imName2, imPrms):
 	jitAmt  = imPrms['jitter_amt']
 	im     = []
 	#Read the images:
-	im.append(cv2.imread(imName1))
-	im.append(cv2.imread(imName2))
+	try:
+		im.append(cv2.imread(imName1))
+	except:
+		raise Exception('Image %s read incorrectly' % imName1)
+	try:
+		im.append(cv2.imread(imName2))
+	except:
+		raise Exception('Image %s read incorrectly' % imName2)
+	try:
+		h1, w1, ch1 = im[0].shape
+		h2, w2, ch2 = im[1].shape
+		assert ch1==ch2
+	except:
+		print (im[0].shape)
+		print (im[1].shape)
+		raise Exception('Something is wrong in read image')
+	
 	ims    = np.concatenate(im, axis=2)
 	#Crop the images
 	h, w, ch = ims.shape
@@ -111,7 +126,7 @@ def sample_within_group(gp, lbPrms):
 				done = False
 				continue
 			lb  = np.array(lb)
-			if lbPrms['maxRot'] is not None:
+			if lbPrms['maxRot'] is not None and lbPrms['simpleRot']:
 				maxRot = np.max(lb[0:lbPrms['numRot']])	
 				if maxRot <= math.radians(lbPrms['maxRot']):
 					done = True
@@ -278,13 +293,17 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 		self.argList = []
 		#Form the list of groups that should be used
 		for b in range(self.param_.batch_size):
+			count = 0
 			while True:
+				count += 1
 				rand   =  np.random.multinomial(1, self.grpSampleProb_)
 				grpIdx =  np.where(rand==1)[0][0]
 				ng     =  np.random.randint(low=0, high=self.grpCount_[grpIdx])
 				n1, n2 =  sample_within_group(self.grpDat_[grpIdx][ng], self.lbPrms_)
 				if n1 is not None:
 					break
+				if np.mod(count,100) == 1:
+					print ('TRIED %d times, cannot find a sample' % count)
 			self.argList.append([self.grpDat_[grpIdx][ng], self.fetchPrms_, self.lbPrms_, (n1,n2)])
 		if self.param_.ncpu > 0:
 			#Launch the jobs
