@@ -107,6 +107,9 @@ def sample_within_group(gp, lbPrms):
 						  gp.data[n2].rots,
 							gp.data[n1].pts.camera, gp.data[n2].pts.camera,
               debugMode=lbPrms['debugMode'])
+			if lb is None:
+				done = False
+				continue
 			lb  = np.array(lb)
 			if lbPrms['maxRot'] is not None:
 				maxRot = np.max(lb[0:lbPrms['numRot']])	
