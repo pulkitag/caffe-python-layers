@@ -147,6 +147,7 @@ class L1LogLossWithIgnoreLayer(caffe.Layer):
 		for b in range(self.batchSz_):
 			if bottom[1].data[b,-1,0,0] == 1.0:
 				err   = np.abs(bottom[0].data[b].squeeze() - bottom[1].data[b,0:-1].squeeze())
+				err   = np.array(err)
 				idx   = err > 1
 				err[idx] = np.log(err[idx]) + 1
 				loss     += np.sum(err)
