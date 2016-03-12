@@ -93,9 +93,9 @@ def get_rots(gp, imPrms, lbPrms, idx):
             to extract 
 	'''
 	n1, n2 = idx
-	lb     = slu.get_pose_delta(lbPrms, gp.data[n1].rots,
+	lb     = slu.get_normalized_pose_delta(lbPrms, gp.data[n1].rots,
 										gp.data[n2].rots,
-						gp.data[n1].pts.camera, gp.data[n2].pts.camera,
+						pt1=gp.data[n1].pts.camera, pt2=gp.data[n2].pts.camera,
 						debugMode=lbPrms['debugMode'])
 	lb     = np.array(lb)
 	imFolder = imPrms['imRootFolder'] % gp.folderId
@@ -110,7 +110,7 @@ def sample_within_group(gp, lbPrms):
 		print ('WARNING: Only 1 element in the group')
 	l1 = np.random.permutation(gp.num)
 	l2 = np.random.permutation(gp.num)
-	done = True
+	done = False
 	for n1 in l1:
 		for n2 in l2:
 			#Sample the same image rarely
@@ -118,24 +118,19 @@ def sample_within_group(gp, lbPrms):
 				rnd = np.random.random()
 				if rnd < 0.85:
 					continue
-			lb  = slu.get_pose_delta(lbPrms, gp.data[n1].rots,
+			lb  = slu.get_pose_delta_clip(lbPrms, gp.data[n1].rots,
 						  gp.data[n2].rots,
-							gp.data[n1].pts.camera, gp.data[n2].pts.camera,
+							pt1=gp.data[n1].pts.camera, pt2=gp.data[n2].pts.camera,
               debugMode=lbPrms['debugMode'])
 			if lb is None:
 				done = False
 				continue
-			lb  = np.array(lb)
-			if lbPrms['maxRot'] is not None and lbPrms['simpleRot']:
-				maxRot = np.max(lb[0:lbPrms['numRot']])	
-				if maxRot <= math.radians(lbPrms['maxRot']):
-					done = True
-				else:
-					done = False
-			if done:
+			else:
+				done = True 
 				break
 		if done:
 			break
+	#If valid label is found
 	if done:
 		return n1, n2
 	else:
@@ -179,6 +174,10 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 		parser.add_argument('--jitter_amt', default=0, type=int)
 		parser.add_argument('--nrmlz_file', default='None', type=str)
 		parser.add_argument('--ncpu', default=2, type=int)
+		#For debugging - load a single group
+		parser.add_argument('--is_single_grp', dest='is_single_grp',
+                        action='store_true', default=False )
+		parser.add_argument('--no-is_single_grp', dest='is_single_grp', action='store_false')
 		args   = parser.parse_args(argsStr.split())
 		print('Using Config:')
 		pprint.pprint(args)
@@ -211,15 +210,7 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 			self.ch_ = 1
 		else:
 			self.ch_ = 3
-		#assert not self.param_.nrmlz_file == 'None'
-		self.rotPrms_ = {}
-		self.rotPrms_['randomRoll']   = self.param_.is_random_roll
-		self.rotPrms_['randomRollMx'] = self.param_.random_roll_max
-		if self.param_.nrmlz_file is not 'None':
-			nrmlzDat = pickle.load(open(self.param_.nrmlz_file, 'r'))
-			self.rotPrms_['nrmlzMu'] = nrmlzDat['nrmlzMu']
-			self.rotPrms_['nrmlzSd'] = nrmlzDat['nrmlzSd'] 
-		
+				
 		#debug mode
 		self.debugMode_ = False
 	
@@ -229,9 +220,10 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 		grpFiles   = grpNameDat['grpFiles']
 		self.grpDat_   = []
 		self.grpCount_ = []
-		numGrp         = 0 
+		numGrp         = 0
+		if self.param_.is_single_grp:
+			grpFiles = [grpFiles[0]]	 
 		for i,g in enumerate(grpFiles):
-		#for i,g in enumerate([grpFiles[0]]):
 			self.grpDat_.append(pickle.load(open(g, 'r'))['groups'])
 			self.grpCount_.append(len(self.grpDat_[i]))
 			print ('Groups in %s: %d' % (g, self.grpCount_[i]))
@@ -256,7 +248,13 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 		lbDat = pickle.load(open(self.param_.lbinfo_file))
 		self.lbPrms_ = lbDat['lbInfo']
 		self.lbPrms_['debugMode'] = self.debugMode_
-		self.lblSz_  = self.lbPrms_['lbSz']	
+		self.lblSz_  = self.lbPrms_['lbSz']
+		if self.lbPrms_['nrmlz'] is not None:
+			nrmlzDat = pickle.load(open(self.lbPrms_['statsFile'], 'r'))
+			self.lbPrms_['nrmlzDat']  = edict()
+			self.lbPrms_['nrmlzDat']['mu'] = nrmlzDat['mu']
+			self.lbPrms_['nrmlzDat']['sd'] = nrmlzDat['sd']
+			print (self.lbPrms_)	
 		if self.debugMode_:
 			self.lblSz_ += 3	
 	
