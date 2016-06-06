@@ -14,6 +14,7 @@ import glog
 import pdb
 import pickle
 import math
+import copy
 try:
 	import cv2
 except:
@@ -48,18 +49,37 @@ def get_jitter(coords=None, jitAmt=0, jitPct=0):
 	return int(dx), int(dy)	
 
 
-def read_double_images(imName1, imName2, imPrms):
+def rotate_image(im, theta):
+	'''
+		theta: in degrees
+	'''
+	rows, cols, _ = im.shape
+	M   = cv2.getRotationMatrix2D((cols/2,rows/2), theta, 1)
+	dst = cv2.warpAffine(im, M, (cols, rows))
+	return dst
+
+def read_double_images(imName1, imName2, imPrms, rollJitter=None):
 	imSz, cropSz = imPrms['imSz'], imPrms['cropSz']
 	jitPct  = imPrms['jitter_pct']
 	jitAmt  = imPrms['jitter_amt']
 	im     = []
 	#Read the images:
 	try:
-		im.append(cv2.imread(imName1))
+		if rollJitter is None:
+			im.append(cv2.imread(imName1))
+		else:
+			r1  = rollJitter[0]
+			img = cv2.imread(imName1)
+			im.append(rotate_image(img, r1)) 
 	except:
 		raise Exception('Image %s read incorrectly' % imName1)
 	try:
-		im.append(cv2.imread(imName2))
+		if rollJitter is None:
+			im.append(cv2.imread(imName2))
+		else:
+			r2  = rollJitter[1]
+			img = cv2.imread(imName2)
+			im.append(rotate_image(img, r2)) 
 	except:
 		raise Exception('Image %s read incorrectly' % imName2)
 	try:
@@ -70,7 +90,6 @@ def read_double_images(imName1, imName2, imPrms):
 		print (im[0].shape)
 		print (im[1].shape)
 		raise Exception('Something is wrong in read image')
-	
 	ims    = np.concatenate(im, axis=2)
 	#Crop the images
 	h, w, ch = ims.shape
@@ -85,6 +104,7 @@ def read_double_images(imName1, imName2, imPrms):
 	ims    = ims.transpose((2,0,1))
 	return ims
 
+
 def get_rots(gp, imPrms, lbPrms, idx):
 	'''
 		gp    : group
@@ -92,16 +112,28 @@ def get_rots(gp, imPrms, lbPrms, idx):
 		idx   : tuple (n1,n2) indicating which grp elements
             to extract 
 	'''
+	rollMax = imPrms['random_roll_max']
+	if rollMax == 0:
+		rollJitter = None
+	else:
+		rollJitter = slu.get_roll_jitter(rollMax)
+	
 	n1, n2 = idx
-	lb     = slu.get_normalized_pose_delta(lbPrms, gp.data[n1].rots,
-										gp.data[n2].rots,
+	if rollJitter is None:
+		r1, r2 = gp.data[n1].rots, gp.data[n2].rots
+	else:
+		r1 = copy.deepcopy(gp.data[n1].rots)
+		r2 = copy.deepcopy(gp.data[n2].rots)
+		r1[2] = r1[2] + rollJitter[0]
+		r2[2] = r2[2] + rollJitter[1]	
+	lb     = slu.get_normalized_pose_delta(lbPrms, r1, r2,
 						pt1=gp.data[n1].pts.camera, pt2=gp.data[n2].pts.camera,
 						debugMode=lbPrms['debugMode'])
 	lb     = np.array(lb)
 	imFolder = imPrms['imRootFolder'] % gp.folderId
 	imName1  = osp.join(imFolder, gp.crpImNames[n1])
 	imName2  = osp.join(imFolder, gp.crpImNames[n2])
-	im     = read_double_images(imName1, imName2, imPrms)
+	im     = read_double_images(imName1, imName2, imPrms, rollJitter=rollJitter)
 	return im, lb			
 
 #Sample which image pair to chose from the group
@@ -164,9 +196,6 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 		parser.add_argument('--im_size', default=101, type=int)
 		parser.add_argument('--is_gray', dest='is_gray', action='store_true')
 		parser.add_argument('--no-is_gray', dest='is_gray', action='store_false')
-		parser.add_argument('--is_random_roll', dest='is_random_roll', 
-                        action='store_true', default=False)
-		parser.add_argument('--no-is_random_roll', dest='is_random_roll', action='store_false')
 		parser.add_argument('--random_roll_max', default=0, type=float)
 		parser.add_argument('--is_mirror',  dest='is_mirror', action='store_true', default=False)
 		parser.add_argument('--resume_iter', default=0, type=int)
@@ -242,6 +271,7 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 		self.fetchPrms_['imRootFolder'] = self.param_.im_root_folder
 		self.fetchPrms_['jitter_pct'] = self.param_.jitter_pct
 		self.fetchPrms_['jitter_amt'] = self.param_.jitter_amt
+		self.fetchPrms_['random_roll_max'] = self.param_.random_roll_max
 		self.fetchPrms_['debugMode'] = self.debugMode_
 	
 		#Parameters that define how labels should be computed
@@ -300,7 +330,7 @@ class PythonGroupDataRotsLayer(caffe.Layer):
 				n1, n2 =  sample_within_group(self.grpDat_[grpIdx][ng], self.lbPrms_)
 				if n1 is not None:
 					break
-				if np.mod(count,100) == 1:
+				if np.mod(count,100) == 1 and count > 1:
 					print ('TRIED %d times, cannot find a sample' % count)
 			self.argList.append([self.grpDat_[grpIdx][ng], self.fetchPrms_, self.lbPrms_, (n1,n2)])
 		if self.param_.ncpu > 0:
