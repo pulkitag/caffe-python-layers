@@ -1,0 +1,25 @@
+input: "gt_quat"
+input_dim: 1
+input_dim: 5
+input_dim: 1
+input_dim: 1
+input: "pd_quat"
+input_dim: 1
+input_dim: 4
+input_dim: 1
+input_dim: 1
+force_backward: true
+name: "StreetNet"
+layer { 
+ name: "loss" 
+ bottom: "pd_quat" 
+ bottom: "gt_quat"
+ top: "loss" 
+ type: "Python" 
+ python_param { 
+	  module: "python_loss_layers" 
+	  layer: "L2LossQuaternionWithIgnoreLayer" 
+	  #layer: "L2LossWithIgnoreLayer" 
+	}
+ loss_weight: 1.0
+}

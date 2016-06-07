@@ -286,7 +286,9 @@ class L2LossQuaternionWithIgnoreLayer(caffe.Layer):
 				#q and -q are the same in the quaterion world
 				err1 = np.sum((pd - gt) * (pd - gt))
 				err2 = np.sum((-pd - gt) * (-pd - gt))
-				loss  += 0.5 * np.min(err1, err2)
+				#err2 = 1000
+				#print (err1, err2)
+				loss  += 0.5 * min(err1, err2)
 				count += 1
 		if count == 0:
 			top[0].data[...] = 0.0
@@ -307,7 +309,7 @@ class L2LossQuaternionWithIgnoreLayer(caffe.Layer):
 				else:
 					pd = pdU
 				gtU = bottom[1].data[b,0:-1].squeeze()
-				gtZ = np.sqrt(np.sum(gt * gt))
+				gtZ = np.sqrt(np.sum(gtU * gtU))
 				if gtZ > 0: 
 					gt = gtU / gtZ
 				else:
@@ -315,21 +317,34 @@ class L2LossQuaternionWithIgnoreLayer(caffe.Layer):
 				#q and -q are the same in the quaterion world
 				err1 = np.sum((pd - gt) * (pd - gt))
 				err2 = np.sum((-pd - gt) * (-pd - gt))
+				#print err2
+				nDim  = bottom[0].data[b].shape[0]
+				diff = np.zeros((nDim,), np.float32)
 				if err1 < err2:
+					#print ('e1')
 					if pdZ > 0:
-						diff = (pd - gt) * (-(pdU * pdU) / np.power(pdZ, 3) + np.ones(pdU.shape) / pdZ)
+						for i in range(nDim):
+							grad    = -pdU[i] * pdU / np.power(pdZ,3)
+							grad[i] = grad[i] + 1 / pdZ
+							diff[i] = np.dot((pd  - gt).reshape(1, nDim), grad) 
 					else:
 						diff = (pd - gt)
 				else:
+					#print ('e2')
 					if pdZ > 0:
-						diff = (-pd - gt) * (-1) * (-(pdU * pdU) / np.power(pdZ, 3) + np.ones(pdU.shape) / pdZ)
+						for i in range(nDim):
+							grad    = -pdU[i] * pdU / np.power(pdZ,3)
+							grad[i] = grad[i] + 1 / pdZ
+							diff[i] = np.dot((-1) * (-pd  - gt).reshape(1, nDim), grad) 
+						#diff = (-pd - gt) * (-1) * (-(pdU * pdU) / np.power(pdZ, 3) + np.ones(pdU.shape) / pdZ)
 					else:
 						diff = (-pd - gt) * (-1)
-				bottom[0].diff[b] = diff[...]
+				bottom[0].diff[b] = diff.reshape(bottom[0].diff[b].shape)
 		if count == 0:
 			bottom[0].diff[...] = 0
 		else:
 			bottom[0].diff[...] = self.param_.loss_weight * bottom[0].diff[...]/float(count)	
+		#print bottom[0].diff
 
 	def reshape(self, bottom, top):
 		top[0].reshape(1)
@@ -387,7 +402,7 @@ class L2LossWithIgnoreLayer(caffe.Layer):
 			if bottom[1].data[b,-1,0,0] == 1.0:
 				count += 1
 				diff   = bottom[0].data[b].squeeze() - bottom[1].data[b,0:-1].squeeze()
-				bottom[0].diff[b] = diff[...]
+				bottom[0].diff[b] = diff[...].reshape(bottom[0].diff[b].shape)
 		if count == 0:
 			bottom[0].diff[...] = 0
 		else:
