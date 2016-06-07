@@ -317,14 +317,14 @@ class L2LossQuaternionWithIgnoreLayer(caffe.Layer):
 				err2 = np.sum((-pd - gt) * (-pd - gt))
 				if err1 < err2:
 					if pdZ > 0:
-						diff = (pd - gt) * ((pdU * pdU) / np.power(pdZ, 3) + np.ones(pdU.shape) / pdZ)
+						diff = (pd - gt) * (-(pdU * pdU) / np.power(pdZ, 3) + np.ones(pdU.shape) / pdZ)
 					else:
 						diff = (pd - gt)
 				else:
 					if pdZ > 0:
-						diff = (-pd - gt) * ((pdU * pdU) / np.power(pdZ, 3) + np.ones(pdU.shape) / pdZ)
+						diff = (-pd - gt) * (-1) * (-(pdU * pdU) / np.power(pdZ, 3) + np.ones(pdU.shape) / pdZ)
 					else:
-						diff = (-pd - gt)
+						diff = (-pd - gt) * (-1)
 				bottom[0].diff[b] = diff[...]
 		if count == 0:
 			bottom[0].diff[...] = 0
