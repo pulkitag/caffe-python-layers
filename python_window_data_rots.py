@@ -7,16 +7,47 @@ from os import path as osp
 import my_pycaffe_io as mpio
 import my_pycaffe as mp
 from easydict import EasyDict as edict
-from transforms3d.transforms3d import euler t3eu
+from transforms3d.transforms3d import euler  as t3eu
+import street_label_utils as slu
 import time
 import glog
 import pdb
+import pickle
 try:
 	import cv2
 except:
 	print('OPEN CV not found, resorting to scipy.misc')
 
+MODULE_PATH = osp.dirname(osp.realpath(__file__))
+
 IM_DATA = []
+
+def get_jitter(coords=None, jitAmt=0, jitPct=0):
+	dx, dy = 0, 0
+	if jitAmt > 0:
+		assert (jitPct == 0)
+		rx, ry = np.random.random(), np.random.random()
+		dx, dy = rx * jitAmt, ry * jitAmt
+		if np.random.random() > 0.5:
+			dx = - dx
+		if np.random.random() > 0.5:
+			dy = -dy
+	
+	if jitPct > 0:
+		h, w = [], []
+		for n in range(len(coords)):
+			x1, y1, x2, y2 = coords[n]
+			h.append(y2 - y1)
+			w.append(x2 - x1)
+		mnH, mnW = min(h), min(w)
+		rx, ry = np.random.random(), np.random.random()
+		dx, dy = rx * mnW * jitPct, ry * mnH * jitPct
+		if np.random.random() > 0.5:
+			dx = - dx
+		if np.random.random() > 0.5:
+			dy = -dy
+	return int(dx), int(dy)	
+
 
 def image_reader(args):
 	imName, imDims, cropSz, imNum, isGray, isMirror = args
@@ -131,7 +162,7 @@ class PythonWindowDataRotsLayer(caffe.Layer):
 			self.ch_ = 1
 		else:
 			self.ch_ = 3
-		assert not self.param_.nrmlz_file == 'None'
+		#assert not self.param_.nrmlz_file == 'None'
 		self.rotPrms_ = {}
 		self.rotPrms_['randomRoll']   = self.param_.randomRoll
 		self.rotPrms_['randomRollMx'] = self.param_.randomRollMx
@@ -288,3 +319,4 @@ class PythonWindowDataRotsLayer(caffe.Layer):
 	def reshape(self, bottom, top):
 		""" This layer has no reshape """
 		pass
+

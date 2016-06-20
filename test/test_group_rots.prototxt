@@ -1,0 +1,13 @@
+name: "StreetNet"
+layer { 
+ name: "window_data" 
+ top: "pair_data" 
+ top: "pose_label" 
+ type: "Python" 
+ python_param { 
+	  module: "streetview_data_group_rots" 
+	  layer: "PythonGroupDataRotsLayer" 
+	  param_str: " --lbinfo_file /data0/pulkitag/streetview/exp/others/label_info_b2a9baee-e311-11e5-861f-74d02bc823b7.pkl --ncpu 0 --mean_file None --grplist_file /data0/pulkitag/streetview/exp/others/group_list_aligned_trn85_val5_te10_dist100_test.pkl --im_root_folder /data0/pulkitag/data_sets/streetview/proc2/%s/imCrop/imSz256-align --jitter_amt 0 --resume_iter 0 --im_size 101 --batch_size 128 --crop_size 192" 
+ } 
+}
+

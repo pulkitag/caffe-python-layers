@@ -132,7 +132,8 @@ class L1LogLossWithIgnoreLayer(caffe.Layer):
 		assert len(bottom) == 2, 'There should be two bottom blobs'
 		assert len(top) == 1, 'There should be 1 top blobs'
 		assert (bottom[0].num == bottom[1].num)
-		assert (bottom[0].channels + 1 == bottom[1].channels)
+		assert bottom[0].channels + 1 == bottom[1].channels,\
+           '%d, %d' % (bottom[0].channels + 1, bottom[1].channels)
 		assert (bottom[0].width == bottom[1].width)
 		assert (bottom[0].height== bottom[1].height)
 		#Get the batchSz
@@ -146,6 +147,7 @@ class L1LogLossWithIgnoreLayer(caffe.Layer):
 		for b in range(self.batchSz_):
 			if bottom[1].data[b,-1,0,0] == 1.0:
 				err   = np.abs(bottom[0].data[b].squeeze() - bottom[1].data[b,0:-1].squeeze())
+				err   = np.array(err)
 				idx   = err > 1
 				err[idx] = np.log(err[idx]) + 1
 				loss     += np.sum(err)
@@ -161,7 +163,8 @@ class L1LogLossWithIgnoreLayer(caffe.Layer):
 			if bottom[1].data[b,-1,0,0] == 1.0:
 				count += 1
 				diff   = bottom[0].data[b].squeeze() - bottom[1].data[b,0:-1].squeeze()
-				err    = np.abs(diff)
+				diff   = np.array(diff)
+				err    = np.array(np.abs(diff))
 				idx    = err > 1
 				diff[~idx] = np.sign(diff[~idx])
 				diff[idx]  = (1/err[idx]) * np.sign(diff[idx])
